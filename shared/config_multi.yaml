@@ -1,0 +1,142 @@
+# -*- yaml -*-
+# config_multi.yaml
+#
+# 切换视觉模型：修改 _active_vision_model 中的 <<: *xxx（只需改一行）
+# 切换文本模型：修改 _active_text_model 中的 <<: *xxx（只需改一行）
+# 切换设备：修改 _active_device 中的 <<: *xxx（只需改一行）
+
+_version: 6
+
+# ==== 模型预配置 ====
+_models:
+  doubao_turbo: &doubao_turbo
+    provider: OpenAILike
+    model: doubao-seed-2-1-turbo-260628
+    api_base: https://ark.cn-beijing.volces.com/api/v3
+    kwargs:
+      api_key: ark-af06bd8e-a714-40ef-8b4e-03928fcc7902-5f5a0
+  doubao_lite: &doubao_lite
+    provider: OpenAILike
+    model: doubao-seed-2-0-lite-260428
+    api_base: https://ark.cn-beijing.volces.com/api/v3
+    kwargs:
+      api_key: ark-af06bd8e-a714-40ef-8b4e-03928fcc7902-5f5a0
+  gpt4o: &gpt4o
+    provider: OpenAILike
+    model: gpt-4o-mini
+    api_base: https://api.openai.com/v1
+    kwargs:
+      api_key: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  deepseek: &deepseek
+    provider: OpenAILike
+    model: deepseek-chat
+    api_base: https://api.deepseek.com/v1
+    kwargs:
+      api_key: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  qwen: &qwen
+    provider: OpenAILike
+    model: qwen-plus
+    api_base: https://dashscope.aliyun.com/compatible-mode/v1
+    kwargs:
+      api_key: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  longcat: &longcat
+    provider: OpenAILike
+    model: LongCat-2.0
+    api_base: https://api.longcat.chat/openai
+    kwargs:
+      api_key: ak_2hR5OE0U51XX4l96kD6VG8ew2W499
+
+# ==== 设备预配置 ====
+_devices:
+  ios_lams: &ios_lams
+    serial: http://127.0.0.1:6643
+    platform: ios
+    auto_setup: false
+  android_emulator: &android_emulator
+    serial: emulator-5554
+    platform: android
+    auto_setup: true
+  # android_pixel: &android_pixel
+  #   serial: 1A2B3C4D5E6F
+  #   platform: android
+  #   auto_setup: true
+
+# ===============================================================
+# 当前使用的模型 - 修改下面两行来切换
+# 视觉模型可选：*doubao_turbo | *doubao_lite | *gpt4o | *deepseek | *qwen
+# 文本模型可选：*longcat | *doubao_turbo | *doubao_lite | *gpt4o | *deepseek | *qwen
+# ===============================================================
+_active_vision_model: &active_vision_model
+  <<: *doubao_lite
+_active_text_model: &active_text_model
+  <<: *longcat
+
+# ================================================================
+# 当前使用的设备 - 修改下面这一行来切换
+# 可选：*ios_lams | *android_emulator
+# ===============================================================
+_active_device: &active_device
+  <<: *ios_lams
+
+agent:
+  max_steps: 15
+  reasoning: false
+  streaming: true
+  vision_only: false
+  after_sleep_action: 0.3
+  wait_for_stable_ui: 0.3
+  use_normalized_coordinates: false
+  fast_agent:
+    vision: true
+    parallel_tools: true
+    system_prompt: config/prompts/fast_agent/system.jinja2
+    user_prompt: config/prompts/fast_agent/user.jinja2
+  manager:
+    vision: true
+    system_prompt: config/prompts/manager/system.jinja2
+    stateless: false
+  executor:
+    vision: true
+    system_prompt: config/prompts/executor/system.jinja2
+  app_cards:
+    enabled: true
+    mode: local
+    app_cards_dir: config/app_cards
+
+llm_profiles:
+  manager:
+    <<: *active_text_model
+    temperature: 0.2
+  executor:
+    <<: *active_vision_model
+    temperature: 0.1
+  fast_agent:
+    <<: *active_vision_model
+    temperature: 0.2
+  app_opener:
+    <<: *active_text_model
+    temperature: 0.0
+  structured_output:
+    <<: *active_text_model
+    temperature: 0.0
+
+device:
+  <<: *active_device
+
+telemetry:
+  enabled: false
+tracing:
+  enabled: false
+logging:
+  debug: false
+  save_trajectory: none
+  trajectory_path: trajectories
+  trajectory_gifs: true
+  rich_text: false
+tools:
+  disabled_tools: null
+  stealth: false
+credentials:
+  enabled: false
+mcp:
+  enabled: false

@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>局域网文件共享</title>
+<style>
+  :root {
+    --bg: #f5f7fa;
+    --card: #ffffff;
+    --border: #e4e7ed;
+    --text: #303133;
+    --text-2: #606266;
+    --text-3: #909399;
+    --primary: #409eff;
+    --primary-hover: #66b1ff;
+    --success: #67c23a;
+    --danger: #f56c6c;
+    --danger-hover: #f78989;
+    --shadow: 0 2px 12px rgba(0,0,0,0.08);
+    --radius: 8px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 24px 20px; }
+
+  /* 头部 */
+  .header {
+    background: var(--card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px 24px;
+    margin-bottom: 16px;
+  }
+  .header-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .title { font-size: 20px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .title .icon { font-size: 24px; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 6px; }
+  .tab {
+    padding: 7px 18px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-2);
+    border-radius: 20px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all .2s;
+    font-family: inherit;
+  }
+  .tab:hover { color: var(--primary); border-color: var(--primary); }
+  .tab.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+
+  /* 按钮 */
+  .btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all .2s;
+    font-family: inherit;
+  }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-success { background: var(--success); color: #fff; }
+  .btn-success:hover { opacity: .9; }
+  .btn-danger { background: var(--danger); color: #fff; }
+  .btn-danger:hover { background: var(--danger-hover); }
+  .btn-ghost { background: transparent; color: var(--text-2); border: 1px solid var(--border); }
+  .btn-ghost:hover { color: var(--primary); border-color: var(--primary); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+  /* 面包屑 */
+  .breadcrumb {
+    padding: 12px 0 0;
+    font-size: 14px;
+    color: var(--text-3);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .breadcrumb a { color: var(--primary); text-decoration: none; cursor: pointer; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  .breadcrumb .sep { color: var(--text-3); margin: 0 2px; }
+
+  /* 拖拽区 */
+  .drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    text-align: center;
+    color: var(--text-3);
+    margin-bottom: 16px;
+    transition: all .2s;
+    display: none;
+  }
+  .drop-zone.active {
+    border-color: var(--primary);
+    background: rgba(64,158,255,0.05);
+    color: var(--primary);
+  }
+
+  /* 文件列表 */
+  .file-list {
+    background: var(--card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .file-item {
+    display: flex;
+    align-items: center;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    transition: background .15s;
+    gap: 12px;
+  }
+  .file-item:last-child { border-bottom: none; }
+  .file-item:hover { background: #f5f7fa; }
+  .file-icon { font-size: 20px; width: 24px; text-align: center; }
+  .file-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .file-name a { color: var(--text); text-decoration: none; cursor: pointer; }
+  .file-name a:hover { color: var(--primary); }
+  .file-name .dir-link { color: var(--text); cursor: pointer; }
+  .file-name .dir-link:hover { color: var(--primary); }
+  .file-size { width: 80px; text-align: right; color: var(--text-3); font-size: 13px; }
+  .file-time { width: 130px; text-align: right; color: var(--text-3); font-size: 13px; }
+  .file-ops { width: 70px; text-align: right; display: flex; gap: 4px; justify-content: flex-end; }
+  .file-check { width: 20px; flex-shrink: 0; display: flex; align-items: center; }
+  .file-check input { width: 16px; height: 16px; cursor: pointer; margin: 0; }
+  .file-header { background: #fafafa; font-size: 13px; color: var(--text-3); font-weight: 500; }
+  .file-header:hover { background: #fafafa; }
+
+  /* 批量操作栏 */
+  .batch-bar {
+    display: none;
+    background: var(--card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 12px 20px;
+    margin-bottom: 16px;
+    align-items: center;
+    gap: 12px;
+    font-size: 14px;
+  }
+  .batch-bar.show { display: flex; }
+  .batch-bar .count { color: var(--text-2); }
+
+  .empty {
+    padding: 48px 20px;
+    text-align: center;
+    color: var(--text-3);
+  }
+  .empty .big-icon { font-size: 48px; margin-bottom: 12px; }
+
+  /* 上传进度 */
+  .upload-bar {
+    background: var(--card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 12px 20px;
+    margin-bottom: 16px;
+    display: none;
+  }
+  .upload-bar .row { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+  .progress { flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  .progress .fill { height: 100%; background: var(--primary); transition: width .3s; }
+
+  /* 提示 */
+  .toast {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--text);
+    color: #fff;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 14px;
+    box-shadow: var(--shadow);
+    z-index: 9999;
+    opacity: 0;
+    transition: opacity .3s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+  .toast.error { background: var(--danger); }
+  .toast.success { background: var(--success); }
+
+  input[type=file] { display: none; }
+
+  /* 共享剪切板 */
+  .clip-compose {
+    background: var(--card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .clip-compose textarea {
+    width: 100%;
+    min-height: 90px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px;
+    font-family: inherit;
+    font-size: 14px;
+    resize: vertical;
+    color: var(--text);
+    box-sizing: border-box;
+    line-height: 1.6;
+  }
+  .clip-compose textarea:focus { outline: none; border-color: var(--primary); }
+  .clip-compose .row { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .clip-hint { font-size: 12px; color: var(--text-3); }
+  .clip-section-title { font-size: 14px; color: var(--text-2); font-weight: 600; }
+  .clip-list { display: flex; flex-direction: column; gap: 12px; }
+  .clip-item {
+    background: var(--card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 14px 16px;
+  }
+  .clip-item .meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 12px; color: var(--text-3); gap: 8px; }
+  .clip-item .ops { display: flex; gap: 6px; flex-shrink: 0; }
+  .clip-text {
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-size: 14px;
+    line-height: 1.6;
+    max-height: 220px;
+    overflow: auto;
+    background: #f8f9fb;
+    border-radius: 6px;
+    padding: 10px;
+  }
+  .clip-text a { color: var(--primary); word-break: break-all; }
+  .clip-img-box { background: #1f1f1f; border-radius: 6px; padding: 8px; text-align: center; }
+  .clip-img { max-width: 100%; max-height: 320px; border-radius: 4px; cursor: zoom-in; display: inline-block; }
+
+  @media (max-width: 600px) {
+    .file-time { display: none; }
+    .file-size { width: 60px; }
+    .clip-compose .row { gap: 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- 头部 -->
+  <div class="header">
+    <div class="header-top">
+      <div class="title"><span class="icon">📁</span> 局域网文件共享</div>
+      <div class="tabs">
+        <button class="tab active" data-view="file" onclick="switchView('file')">📁 文件</button>
+        <button class="tab" data-view="clip" onclick="switchView('clip')">📋 共享剪切板</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 拖拽提示（两个视图共用） -->
+  <div class="drop-zone" id="dropZone">松开鼠标即可上传文件</div>
+
+  <!-- 文件视图 -->
+  <div id="fileView">
+    <div class="toolbar">
+      <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">📤 上传文件</button>
+      <button class="btn btn-ghost" onclick="mkdir()">🗂 新建文件夹</button>
+    </div>
+
+    <div class="breadcrumb" id="breadcrumb"></div>
+
+    <!-- 上传进度 -->
+    <div class="upload-bar" id="uploadBar">
+      <div class="row">
+        <span id="uploadText">上传中...</span>
+        <div class="progress"><div class="fill" id="progressFill" style="width:0%"></div></div>
+      </div>
+    </div>
+
+    <!-- 批量操作栏 -->
+    <div class="batch-bar" id="batchBar">
+      <span class="count" id="batchCount">已选 0 项</span>
+      <div style="flex:1"></div>
+      <button class="btn btn-success btn-sm" onclick="batchDownload()">📦 批量下载</button>
+      <button class="btn btn-danger btn-sm" onclick="batchDelete()">🗑 批量删除</button>
+      <button class="btn btn-ghost btn-sm" onclick="clearSelection()">取消</button>
+    </div>
+
+    <!-- 文件列表 -->
+    <div class="file-list" id="fileList">
+      <div class="empty"><div class="big-icon">📂</div>加载中...</div>
+    </div>
+    <input type="file" id="fileInput" multiple>
+  </div>
+
+  <!-- 共享剪切板视图 -->
+  <div id="clipView" style="display:none">
+    <div class="clip-compose">
+      <textarea id="clipInput" placeholder="把要共享的文字粘贴/输入到这里，点「发布」即可让局域网其他设备看到..."></textarea>
+      <div class="row">
+        <button class="btn btn-primary" onclick="publishClip()">📤 发布文字</button>
+        <button class="btn btn-ghost" onclick="document.getElementById('clipFileInput').click()">🖼 选择图片发布</button>
+        <span class="clip-hint">提示：在剪切板区域直接 Ctrl+V 可粘贴截图发布；点击图片可放大</span>
+      </div>
+      <input type="file" id="clipFileInput" accept="image/*">
+    </div>
+
+    <div class="toolbar" style="justify-content:space-between">
+      <span class="clip-section-title">📋 共享内容</span>
+      <div>
+        <button class="btn btn-ghost btn-sm" onclick="loadClipboard()">🔄 刷新</button>
+        <button class="btn btn-danger btn-sm" onclick="clearClip()">🧹 清空全部</button>
+      </div>
+    </div>
+
+    <div class="clip-list" id="clipList">
+      <div class="empty"><div class="big-icon">📋</div>还没有共享内容，发布一条试试～</div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let currentPath = '';
+let currentView = 'file';
+let selectedItems = new Set();
+let clipTexts = {};        // 文字条目 id -> 文本（供复制按钮读取，避免 HTML 注入）
+
+// ---- 工具函数 ----
+function toast(msg, type) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show ' + (type || '');
+  setTimeout(() => el.className = 'toast', 2500);
+}
+
+async function api(url, opts) {
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || '请求失败');
+  return data;
+}
+
+function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeAttr(s) { return s.replace(/'/g, "\\'"); }
+
+function linkify(text) {
+  const esc = escapeHtml(text);
+  return esc.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+}
+
+// ================= 视图切换 =================
+function switchView(v) {
+  currentView = v;
+  document.getElementById('fileView').style.display = v === 'file' ? 'block' : 'none';
+  document.getElementById('clipView').style.display = v === 'clip' ? 'block' : 'none';
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
+  if (v === 'clip') loadClipboard();
+}
+
+// ================= 文件视图 =================
+async function loadList(path) {
+  currentPath = path || '';
+  try {
+    const data = await api('/api/list?path=' + encodeURIComponent(currentPath));
+    renderBreadcrumb(data.path);
+    renderList(data.items);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function renderBreadcrumb(path) {
+  const el = document.getElementById('breadcrumb');
+  let html = '<a onclick="loadList(\'\')">全部文件</a>';
+  if (path) {
+    const parts = path.split('/').filter(Boolean);
+    let acc = '';
+    parts.forEach((p, i) => {
+      acc = acc ? acc + '/' + p : p;
+      const target = acc;
+      html += `<span class="sep">/</span><a onclick="loadList('${target}')">${escapeHtml(p)}</a>`;
+    });
+  }
+  el.innerHTML = html;
+}
+
+function renderList(items) {
+  const el = document.getElementById('fileList');
+  clearSelection();
+  if (!items.length) {
+    el.innerHTML = '<div class="empty"><div class="big-icon">📂</div>空文件夹，点上方按钮上传文件吧～</div>';
+    return;
+  }
+  items.sort((a, b) => (a.is_dir === b.is_dir) ? a.name.localeCompare(b.name, 'zh') : (a.is_dir ? -1 : 1));
+
+  let html = `
+    <div class="file-item file-header">
+      <div class="file-check"><input type="checkbox" id="selectAll" onchange="toggleAll(this.checked)"></div>
+      <div class="file-icon"></div>
+      <div class="file-name">名称</div>
+      <div class="file-size">大小</div>
+      <div class="file-time">修改时间</div>
+      <div class="file-ops">操作</div>
+    </div>`;
+
+  items.forEach(item => {
+    const icon = item.is_dir ? '📁' : fileIcon(item.name);
+    const itemPath = currentPath ? currentPath + '/' + item.name : item.name;
+    const nameHtml = item.is_dir
+      ? `<span class="dir-link" onclick="enterDir('${escapeAttr(item.name)}')">${escapeHtml(item.name)}</span>`
+      : `<a href="/api/download/${encodeURIComponent(itemPath)}" download>${escapeHtml(item.name)}</a>`;
+    html += `
+      <div class="file-item">
+        <div class="file-check"><input type="checkbox" value="${escapeHtml(itemPath)}" onchange="toggleSelect(this)"></div>
+        <div class="file-icon">${icon}</div>
+        <div class="file-name">${nameHtml}</div>
+        <div class="file-size">${item.size_text}</div>
+        <div class="file-time">${item.modified}</div>
+        <div class="file-ops">
+          <button class="btn btn-ghost btn-sm" onclick="renameItem('${escapeAttr(item.name)}')" title="重命名">✏️</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteItem('${escapeAttr(item.name)}')" title="删除">🗑</button>
+        </div>
+      </div>`;
+  });
+  el.innerHTML = html;
+}
+
+function fileIcon(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  const map = { mp3:'🎵', wav:'🎵', mp4:'🎬', avi:'🎬', mov:'🎬', mkv:'🎬',
+    jpg:'🖼', jpeg:'🖼', png:'🖼', gif:'🖼', bmp:'🖼', svg:'🖼',
+    pdf:'📄', doc:'📄', docx:'📄', xls:'📊', xlsx:'📊', ppt:'📊', pptx:'📊',
+    zip:'📦', rar:'📦', '7z':'📦', gz:'📦', tar:'📦',
+    txt:'📝', md:'📝', py:'🐍', js:'📜', html:'🌐', css:'🎨', json:'⚙️', exe:'⚙️' };
+  return map[ext] || '📄';
+}
+
+function enterDir(name) {
+  loadList(currentPath ? currentPath + '/' + name : name);
+}
+
+// ---- 多选与批量操作 ----
+function toggleSelect(checkbox) {
+  if (checkbox.checked) selectedItems.add(checkbox.value);
+  else selectedItems.delete(checkbox.value);
+  updateBatchBar();
+}
+
+function toggleAll(checked) {
+  document.querySelectorAll('.file-item:not(.file-header) .file-check input[type=checkbox]').forEach(cb => {
+    cb.checked = checked;
+    if (checked) selectedItems.add(cb.value);
+    else selectedItems.delete(cb.value);
+  });
+  updateBatchBar();
+}
+
+function clearSelection() {
+  selectedItems.clear();
+  updateBatchBar();
+}
+
+function updateBatchBar() {
+  const bar = document.getElementById('batchBar');
+  const count = document.getElementById('batchCount');
+  if (selectedItems.size > 0) {
+    bar.classList.add('show');
+    count.textContent = `已选 ${selectedItems.size} 项`;
+  } else {
+    bar.classList.remove('show');
+  }
+  const selectAll = document.getElementById('selectAll');
+  if (selectAll) {
+    const cbs = document.querySelectorAll('.file-item:not(.file-header) .file-check input[type=checkbox]');
+    selectAll.checked = cbs.length > 0 && [...cbs].every(cb => cb.checked);
+  }
+}
+
+async function batchDownload() {
+  if (selectedItems.size === 0) return;
+  const paths = [...selectedItems];
+  toast(`正在打包 ${paths.length} 项...`);
+  try {
+    const res = await fetch('/api/download-zip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || '打包失败');
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'files.zip';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast(`已下载 ${paths.length} 项`, 'success');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function batchDelete() {
+  if (selectedItems.size === 0) return;
+  if (!confirm(`确定删除选中的 ${selectedItems.size} 项吗？此操作不可恢复！`)) return;
+  const paths = [...selectedItems];
+  let ok = 0, fail = 0;
+  for (const p of paths) {
+    try {
+      await api('/api/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: p })
+      });
+      ok++;
+      selectedItems.delete(p);
+    } catch (e) { fail++; }
+  }
+  toast(`已删除 ${ok} 项${fail ? `，${fail} 项失败` : ''}`, fail ? 'error' : 'success');
+  loadList(currentPath);
+}
+
+// ---- 上传 ----
+document.getElementById('fileInput').addEventListener('change', function(e) {
+  uploadFiles(e.target.files);
+  e.target.value = '';
+});
+
+function uploadFiles(files) {
+  if (!files.length) return;
+  const bar = document.getElementById('uploadBar');
+  bar.style.display = 'block';
+
+  const formData = new FormData();
+  formData.append('dir', currentPath);
+  for (const f of files) formData.append('files', f, f.name);
+
+  const xhr = new XMLHttpRequest();
+  xhr.upload.addEventListener('progress', e => {
+    if (e.lengthComputable) {
+      const pct = Math.round(e.loaded / e.total * 100);
+      document.getElementById('progressFill').style.width = pct + '%';
+      document.getElementById('uploadText').textContent = `上传中... ${pct}%`;
+    }
+  });
+  xhr.addEventListener('load', () => {
+    bar.style.display = 'none';
+    document.getElementById('progressFill').style.width = '0%';
+    try {
+      const data = JSON.parse(xhr.responseText);
+      if (xhr.status === 200) {
+        toast(`成功上传 ${data.count} 个文件`, 'success');
+        loadList(currentPath);
+      } else {
+        toast(data.error || '上传失败', 'error');
+      }
+    } catch (e) { toast('上传失败', 'error'); }
+  });
+  xhr.addEventListener('error', () => { bar.style.display = 'none'; toast('上传失败', 'error'); });
+  xhr.open('POST', '/api/upload');
+  xhr.send(formData);
+}
+
+// ---- 拖拽上传 ----
+let dragCounter = 0;
+window.addEventListener('dragenter', e => {
+  if (currentView === 'ftp') return;
+  e.preventDefault();
+  dragCounter++;
+  document.getElementById('dropZone').style.display = 'block';
+  const dz = document.getElementById('dropZone');
+  dz.textContent = currentView === 'clip' ? '松开鼠标即可上传图片到剪切板' : '松开鼠标即可上传文件';
+  setTimeout(() => dz.classList.add('active'), 0);
+});
+window.addEventListener('dragleave', e => {
+  e.preventDefault();
+  dragCounter--;
+  if (dragCounter <= 0) {
+    document.getElementById('dropZone').classList.remove('active');
+    setTimeout(() => { if (dragCounter <= 0) document.getElementById('dropZone').style.display = 'none'; }, 100);
+  }
+});
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => {
+  e.preventDefault();
+  dragCounter = 0;
+  document.getElementById('dropZone').classList.remove('active');
+  document.getElementById('dropZone').style.display = 'none';
+  const files = e.dataTransfer.files;
+  if (!files.length) return;
+  if (currentView === 'clip') {
+    for (const f of files) {
+      if (f.type.startsWith('image/')) uploadClipImage(f);
+    }
+  } else {
+    uploadFiles(files);
+  }
+});
+
+// ---- 新建文件夹 ----
+async function mkdir() {
+  const name = prompt('请输入文件夹名称：');
+  if (!name) return;
+  try {
+    await api('/api/mkdir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: currentPath, name })
+    });
+    toast('文件夹已创建', 'success');
+    loadList(currentPath);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ---- 删除 ----
+async function deleteItem(name) {
+  if (!confirm(`确定删除「${name}」吗？`)) return;
+  const path = currentPath ? currentPath + '/' + name : name;
+  try {
+    await api('/api/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path })
+    });
+    toast('已删除', 'success');
+    loadList(currentPath);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ---- 重命名 ----
+async function renameItem(name) {
+  const newName = prompt(`重命名「${name}」为：`, name);
+  if (!newName || newName === name) return;
+  const path = currentPath ? currentPath + '/' + name : name;
+  try {
+    await api('/api/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, name: newName })
+    });
+    toast('已重命名', 'success');
+    loadList(currentPath);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ================= 共享剪切板 =================
+async function publishClip() {
+  const ta = document.getElementById('clipInput');
+  const text = ta.value;
+  if (!text.trim()) { toast('内容不能为空', 'error'); return; }
+  try {
+    await api('/api/clipboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    ta.value = '';
+    toast('已发布到共享剪切板', 'success');
+    loadClipboard();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+document.getElementById('clipFileInput').addEventListener('change', function(e) {
+  if (e.target.files.length) uploadClipImage(e.target.files[0]);
+  e.target.value = '';
+});
+
+function uploadClipImage(file) {
+  if (!file || !file.type.startsWith('image/')) { toast('请选择图片', 'error'); return; }
+  const fd = new FormData();
+  fd.append('file', file, file.name || 'image.png');
+  toast('正在发布图片...');
+  fetch('/api/clipboard/image', { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) toast(d.error, 'error');
+      else { toast('图片已发布', 'success'); loadClipboard(); }
+    })
+    .catch(() => toast('图片发布失败', 'error'));
+}
+
+// Ctrl+V 直接粘贴截图发布（仅剪切板视图）
+document.addEventListener('paste', e => {
+  if (currentView !== 'clip') return;
+  const items = (e.clipboardData || window.clipboardData || {}).items;
+  if (!items) return;
+  for (const it of items) {
+    if (it.kind === 'file' && it.type.startsWith('image/')) {
+      e.preventDefault();
+      const blob = it.getAsFile();
+      if (blob) uploadClipImage(blob);
+      return;
+    }
+  }
+});
+
+// 复制文字到剪贴板（兼容 http 非安全上下文）
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.top = '-9999px';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    toast('已复制到剪贴板', 'success');
+  } catch (e) {
+    toast('复制失败，请手动选择文本复制', 'error');
+  }
+}
+
+function copyClip(id) {
+  const t = clipTexts[id];
+  if (t !== undefined) copyText(t);
+}
+
+async function deleteClip(id) {
+  if (!confirm('确定删除这条共享内容吗？')) return;
+  try {
+    await api('/api/clipboard/' + id, { method: 'DELETE' });
+    toast('已删除', 'success');
+    loadClipboard();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function clearClip() {
+  if (!confirm('确定清空全部共享内容吗？此操作不可恢复！')) return;
+  try {
+    await api('/api/clipboard/clear', { method: 'POST' });
+    toast('已清空', 'success');
+    loadClipboard();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function loadClipboard() {
+  try {
+    const data = await api('/api/clipboard');
+    renderClipboard(data.items || []);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function renderClipboard(items) {
+  const el = document.getElementById('clipList');
+  clipTexts = {};
+  if (!items.length) {
+    el.innerHTML = '<div class="empty"><div class="big-icon">📋</div>还没有共享内容，发布一条试试～</div>';
+    return;
+  }
+  let html = '';
+  items.forEach(it => {
+    if (it.type === 'image') {
+      html += `
+        <div class="clip-item">
+          <div class="meta">
+            <span>🖼 图片 · ${it.created_at}</span>
+            <div class="ops">
+              <a class="btn btn-ghost btn-sm" href="/api/clipboard/file/${it.id}" download target="_blank">⬇️ 保存</a>
+              <button class="btn btn-danger btn-sm" onclick="deleteClip('${it.id}')">🗑</button>
+            </div>
+          </div>
+          <div class="clip-img-box"><img class="clip-img" src="/api/clipboard/file/${it.id}" onclick="window.open(this.src)" title="点击放大 · 右键可复制图片"></div>
+          <div class="clip-hint" style="margin-top:6px">右键图片 → 复制图片；或点「保存」下载</div>
+        </div>`;
+    } else {
+      clipTexts[it.id] = it.text;
+      html += `
+        <div class="clip-item">
+          <div class="meta">
+            <span>📝 文字 · ${it.created_at}</span>
+            <div class="ops">
+              <button class="btn btn-ghost btn-sm" onclick="copyClip('${it.id}')">📋 复制</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteClip('${it.id}')">🗑</button>
+            </div>
+          </div>
+          <div class="clip-text">${linkify(it.text)}</div>
+        </div>`;
+    }
+  });
+  el.innerHTML = html;
+}
+
+// 初始化
+loadList('');
+</script>
+</body>
+</html>

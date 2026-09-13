@@ -9,14 +9,13 @@
 按 Ctrl+C 停止。
 """
 
-import html
-import io
 import json
 import os
 import re
 import shutil
 import socket
 import sys
+import tempfile
 import urllib.parse
 import zipfile
 import mimetypes
@@ -25,22 +24,39 @@ import uuid
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 
-# ===== 配置区（可按需修改）=====
+# ===== 配置区（可按需修改，均可用环境变量覆盖）=====
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SHARE_DIR = os.path.join(BASE_DIR, "shared")
 WEB_DIR = os.path.join(BASE_DIR, "web")
 
-HOST = "0.0.0.0"
+# 监听地址与端口。
+# Linux/systemd 部署时设 HTTP_HOST=127.0.0.1 只绑本机，配合 SSH 隧道使用，不开公网。
+HOST = os.environ.get("HTTP_HOST", "0.0.0.0")
 PORT = int(os.environ.get("HTTP_PORT", 8080))
 
-# 共享剪切板数据存储
-DATA_DIR = os.path.join(BASE_DIR, "data")
+# 共享文件目录（默认脚本同级 shared；服务器上建议指到 /var/lib/fileshare/shared）
+SHARE_DIR = os.environ.get("SHARE_DIR") or os.path.join(BASE_DIR, "shared")
+
+# 数据目录（剪贴板存储 + 上传中转），与 SHARE_DIR 解耦，便于代码与数据分离部署
+DATA_DIR = os.environ.get("DATA_DIR") or os.path.join(BASE_DIR, "data")
 CLIPBOARD_FILE = os.path.join(DATA_DIR, "clipboard.json")
 CLIPBOARD_FILES_DIR = os.path.join(DATA_DIR, "clipboard_files")
-CLIPBOARD_MAX_ENTRIES = 200
+# 上传中转目录：与 SHARE_DIR 同盘时用 os.replace 秒完成，避免跨盘拷贝大文件
+SPOOL_DIR = os.path.join(DATA_DIR, ".spool")
+
+# 单文件上传上限（MB），0 = 不限制。超限的文件会被拒绝并丢弃。
+MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", 2048))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024 if MAX_UPLOAD_MB > 0 else 0
+
+CLIPBOARD_MAX_ENTRIES = int(os.environ.get("CLIPBOARD_MAX_ENTRIES", 200))
 CLIPBOARD_MAX_TEXT = 100 * 1024
+# 剪贴板图片大小上限（MB），防止单张图把内存打满
+CLIPBOARD_MAX_IMAGE_MB = int(os.environ.get("CLIPBOARD_MAX_IMAGE_MB", 20))
+CLIPBOARD_MAX_IMAGE = CLIPBOARD_MAX_IMAGE_MB * 1024 * 1024
 clipboard_lock = threading.Lock()
+
+# 文件 IO 分块大小（流式读写用）
+CHUNK_SIZE = 64 * 1024
 
 # ==============================
 
@@ -49,6 +65,8 @@ def get_local_ip():
     """获取本机局域网 IP，优先返回真实物理网卡 IP，跳过 VPN/虚拟网卡。"""
     import subprocess
 
+    # 虚拟/回环网卡前缀，这些 IP 不是真实局域网地址
+    # 127.x = 回环; 169.254.x = 未获取 DHCP; 198.18.x = 性能测试/VPN 虚拟网卡
     virtual_prefixes = ("127.", "169.254.", "198.18.")
     try:
         if sys.platform == "win32":
@@ -56,6 +74,12 @@ def get_local_ip():
                 ["ipconfig"], capture_output=True, timeout=3
             ).stdout.decode("gbk", errors="ignore")
             ips = re.findall(r"IPv4[^\d]*([\d.]+)", out)
+        elif sys.platform == "darwin":
+            # macOS 没有 ip 命令，用 ifconfig（只取 inet，排除 inet6）
+            out = subprocess.run(
+                ["ifconfig"], capture_output=True, timeout=3
+            ).stdout.decode(errors="ignore")
+            ips = re.findall(r"inet (\d+\.\d+\.\d+\.\d+)", out)
         else:
             out = subprocess.run(
                 ["ip", "-4", "addr"], capture_output=True, timeout=3
@@ -99,6 +123,19 @@ def human_size(size):
 def ensure_data_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(CLIPBOARD_FILES_DIR, exist_ok=True)
+    os.makedirs(SPOOL_DIR, exist_ok=True)
+
+
+def cleanup_spool():
+    """清理上次遗留的上传中转临时文件（进程异常退出时可能残留）。"""
+    try:
+        for name in os.listdir(SPOOL_DIR):
+            try:
+                os.remove(os.path.join(SPOOL_DIR, name))
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def _load_clipboard():
@@ -144,6 +181,8 @@ class FileHandler(BaseHTTPRequestHandler):
     """HTTP 文件管理请求处理器。"""
 
     server_version = "FileShare/1.0"
+    # 单次 socket 读超时（秒），防止慢连接长期占着线程
+    timeout = 600
 
     def log_message(self, format, *args):
         """简化日志格式。"""
@@ -263,7 +302,7 @@ class FileHandler(BaseHTTPRequestHandler):
         })
 
     def _api_download(self, rel_path):
-        """下载文件。"""
+        """下载文件（流式发送，不把整个文件读进内存）。"""
         rel_path = urllib.parse.unquote(rel_path)
         target = safe_join(SHARE_DIR, rel_path)
         if target is None or not os.path.isfile(target):
@@ -272,18 +311,150 @@ class FileHandler(BaseHTTPRequestHandler):
 
         filename = os.path.basename(target)
         try:
-            with open(target, "rb") as f:
-                data = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/octet-stream")
-            # RFC 5987 处理中文文件名
-            encoded = urllib.parse.quote(filename)
-            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{encoded}")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            size = os.path.getsize(target)
         except OSError as e:
             self._send_json({"error": str(e)}, 500)
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        # RFC 5987 处理中文文件名
+        encoded = urllib.parse.quote(filename)
+        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{encoded}")
+        self.send_header("Content-Length", str(size))
+        self.end_headers()
+        try:
+            with open(target, "rb") as f:
+                shutil.copyfileobj(f, self.wfile, CHUNK_SIZE)
+        except (OSError, BrokenPipeError, ConnectionResetError):
+            pass  # 客户端中断，正常现象
+
+    # ---- 流式 multipart 解析 ----
+    # 手写流式解析：大文件边收边落盘，内存占用与文件大小无关。
+    # 原实现 body = rfile.read(content_length) 会把整个文件吃进内存，
+    # 在小内存服务器上（如 1GB 实例）上传大文件会触发 OOM。
+
+    @staticmethod
+    def _pump_until(buf, fill, sep, tail_keep, sink, limit=0):
+        """把 buf 内容流式吐给 sink，直到遇到分隔符 sep。
+
+        返回 (写入字节数, 是否超限)。
+        buf 是滑动缓冲；tail_keep 保证分隔符跨 chunk 时不被切断。
+        """
+        written = 0
+        while True:
+            idx = buf.find(sep)
+            if idx != -1:
+                sink(bytes(buf[:idx]))
+                written += idx
+                del buf[:idx + len(sep)]
+                return written, False
+            # 没遇到分隔符：吐掉除尾部保留区外的内容
+            if len(buf) > tail_keep:
+                cut = len(buf) - tail_keep
+                sink(bytes(buf[:cut]))
+                written += cut
+                del buf[:cut]
+                if limit and written > limit:
+                    return written, True
+            if not fill():
+                return written, False
+
+    def _iter_multipart(self, boundary, content_length, max_file_bytes=None):
+        """流式解析 multipart/form-data，逐个 yield (headers_text, kind, value)。
+
+        kind == "file"  → value = (临时文件路径, 原始文件名, 字节数, 是否超限)
+        kind == "field" → value = bytes
+        调用方负责删除临时文件。max_file_bytes 为单文件上限，None 取全局配置。
+        """
+        limit = MAX_UPLOAD_BYTES if max_file_bytes is None else max_file_bytes
+        delim = b"--" + boundary.encode()
+        CRLF = b"\r\n"
+        tail_keep = len(delim) + 8
+
+        buf = bytearray()
+        remaining = [content_length]
+
+        def fill():
+            if remaining[0] <= 0:
+                return False
+            chunk = self.rfile.read(min(CHUNK_SIZE, remaining[0]))
+            if not chunk:
+                remaining[0] = 0
+                return False
+            remaining[0] -= len(chunk)
+            buf.extend(chunk)
+            return True
+
+        # 1) 定位第一个 boundary
+        while buf.find(delim) == -1:
+            if not fill():
+                return
+        del buf[:buf.find(delim) + len(delim)]
+
+        while True:
+            # 2) 判断是结束标记 "--" 还是下一个 part 的 CRLF
+            while len(buf) < 2:
+                if not fill():
+                    return
+            if bytes(buf[:2]) == b"--":
+                return
+            if bytes(buf[:2]) != CRLF:
+                return  # 格式异常，放弃后续解析
+            del buf[:2]
+
+            # 3) 读 part 头部
+            while buf.find(CRLF + CRLF) == -1:
+                if not fill():
+                    return
+            hdr_end = buf.find(CRLF + CRLF)
+            headers_text = bytes(buf[:hdr_end]).decode("utf-8", errors="ignore")
+            del buf[:hdr_end + 4]
+
+            filename = None
+            for line in headers_text.split("\r\n"):
+                if "filename=" in line:
+                    m = re.search(r'filename="([^"]*)"', line)
+                    if m:
+                        filename = m.group(1)
+
+            sep = CRLF + delim
+
+            if filename is not None and filename != "":
+                # 文件字段：流式落盘到中转目录
+                fd, tmp_path = tempfile.mkstemp(prefix="up_", dir=SPOOL_DIR)
+                fh = os.fdopen(fd, "wb")
+                try:
+                    written, too_big = self._pump_until(
+                        buf, fill, sep, tail_keep, fh.write, limit
+                    )
+                finally:
+                    fh.close()
+                if too_big:
+                    # 超限：丢弃剩余内容，但必须把流消费干净，否则后续 part 解析错位
+                    self._pump_until(buf, fill, sep, tail_keep, lambda b: None)
+                yield headers_text, "file", (tmp_path, filename, written, too_big)
+            else:
+                # 普通字段（dir 等）：内容很小，直接累到内存
+                val = bytearray()
+                self._pump_until(
+                    buf, fill, sep, tail_keep, val.extend, CLIPBOARD_MAX_TEXT
+                )
+                yield headers_text, "field", bytes(val)
+
+    def _save_upload(self, tmp_path, filename, rel_dir):
+        """把中转文件搬进共享目录。同盘时是瞬时 rename，不产生额外拷贝。"""
+        filename = os.path.basename(filename)
+        if not filename:
+            return None
+        target_dir = safe_join(SHARE_DIR, rel_dir) or SHARE_DIR
+        os.makedirs(target_dir, exist_ok=True)
+        target_path = os.path.join(target_dir, filename)
+        try:
+            os.replace(tmp_path, target_path)
+        except OSError:
+            shutil.move(tmp_path, target_path)  # 跨文件系统时退化为拷贝
+        return filename
 
     # ---- POST 处理 ----
 
@@ -306,56 +477,52 @@ class FileHandler(BaseHTTPRequestHandler):
             return
 
         content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
+        if content_length <= 0:
+            self._send_json({"error": "请求体为空"}, 400)
+            return
 
-        # 简单解析 multipart
-        delimiter = b"--" + boundary.encode()
-        parts = body.split(delimiter)
         uploaded = []
+        oversize = []
+        tmp_files = []
         rel_dir = ""  # dir 字段可能在前面的 part，需跨 part 保留
 
-        for part in parts:
-            if not part or part == b"--\r\n" or part == b"--\r\n--" or part.strip() == b"--":
-                continue
-            if part.startswith(b"\r\n"):
-                part = part[2:]
-            if part.endswith(b"\r\n"):
-                part = part[:-2]
+        try:
+            for headers_text, kind, value in self._iter_multipart(boundary, content_length):
+                if kind == "field":
+                    if 'name="dir"' in headers_text:
+                        rel_dir = value.decode("utf-8", errors="ignore").strip()
+                    continue
 
-            header_end = part.find(b"\r\n\r\n")
-            if header_end == -1:
-                continue
-            header_bytes = part[:header_end].decode("utf-8", errors="ignore")
-            content = part[header_end + 4:]
+                tmp_path, filename, size, too_big = value
+                tmp_files.append(tmp_path)
+                if too_big:
+                    oversize.append(os.path.basename(filename) or "?")
+                    continue
+                saved = self._save_upload(tmp_path, filename, rel_dir)
+                if saved is None:
+                    continue
+                tmp_files.remove(tmp_path)
+                uploaded.append(saved)
+        except Exception as e:
+            self._send_json({"error": f"上传失败: {e}"}, 500)
+            return
+        finally:
+            for p in tmp_files:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
-            # 提取文件名
-            filename = None
-            for line in header_bytes.split("\r\n"):
-                if "filename=" in line:
-                    m = re.search(r'filename="([^"]*)"', line)
-                    if m:
-                        filename = m.group(1)
+        if not uploaded and oversize:
+            self._send_json(
+                {"error": f"文件超过上限 {MAX_UPLOAD_MB}MB：{', '.join(oversize)}"}, 413
+            )
+            return
 
-            # dir 字段是单独的 part
-            if not filename:
-                if 'name="dir"' in header_bytes:
-                    rel_dir = content.decode("utf-8", errors="ignore").strip()
-                continue
-
-            # 文件 part：用前面解析到的 rel_dir
-            filename = os.path.basename(filename)
-            if not filename:
-                continue
-
-            target_dir = safe_join(SHARE_DIR, rel_dir) or SHARE_DIR
-            os.makedirs(target_dir, exist_ok=True)
-            target_path = os.path.join(target_dir, filename)
-
-            with open(target_path, "wb") as f:
-                f.write(content)
-            uploaded.append(filename)
-
-        self._send_json({"uploaded": uploaded, "count": len(uploaded)})
+        resp = {"uploaded": uploaded, "count": len(uploaded)}
+        if oversize:
+            resp["oversize"] = oversize
+        self._send_json(resp)
 
     def _api_mkdir(self):
         """创建目录。body: {"path": "...", "name": "..."}"""
@@ -439,28 +606,40 @@ class FileHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "无有效文件"}, 404)
             return
 
-        # 打包成 zip（内存中）
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for rel, target in valid:
-                if os.path.isdir(target):
-                    # 文件夹：递归添加，保留相对路径结构
-                    for root, dirs, files in os.walk(target):
-                        for fn in files:
-                            full = os.path.join(root, fn)
-                            arcname = os.path.relpath(full, SHARE_DIR)
-                            zf.write(full, arcname)
-                else:
-                    # 单文件：用文件名作为 zip 内路径
-                    zf.write(target, os.path.basename(target))
+        # 打包成 zip：先写中转文件再流式发送，避免整个 zip 常驻内存
+        tmp_zip = None
+        try:
+            fd, tmp_zip = tempfile.mkstemp(suffix=".zip", prefix="zip_", dir=SPOOL_DIR)
+            with os.fdopen(fd, "wb") as fh:
+                with zipfile.ZipFile(fh, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for rel, target in valid:
+                        if os.path.isdir(target):
+                            # 文件夹：递归添加，保留相对路径结构
+                            for root, dirs, files in os.walk(target):
+                                for fn in files:
+                                    full = os.path.join(root, fn)
+                                    arcname = os.path.relpath(full, SHARE_DIR)
+                                    zf.write(full, arcname)
+                        else:
+                            # 单文件：用文件名作为 zip 内路径
+                            zf.write(target, os.path.basename(target))
 
-        zip_data = buf.getvalue()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/zip")
-        self.send_header("Content-Disposition", 'attachment; filename="files.zip"')
-        self.send_header("Content-Length", str(len(zip_data)))
-        self.end_headers()
-        self.wfile.write(zip_data)
+            size = os.path.getsize(tmp_zip)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", 'attachment; filename="files.zip"')
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            with open(tmp_zip, "rb") as f:
+                shutil.copyfileobj(f, self.wfile, CHUNK_SIZE)
+        except (OSError, BrokenPipeError, ConnectionResetError):
+            pass  # 客户端中断或磁盘异常
+        finally:
+            if tmp_zip:
+                try:
+                    os.remove(tmp_zip)
+                except OSError:
+                    pass
 
     # ---- 共享剪切板 API ----
 
@@ -503,36 +682,47 @@ class FileHandler(BaseHTTPRequestHandler):
         if not boundary:
             self._send_json({"error": "缺少 boundary"}, 400)
             return
+
         content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
-        delimiter = b"--" + boundary.encode()
-        parts = body.split(delimiter)
+        if content_length <= 0:
+            self._send_json({"error": "请求体为空"}, 400)
+            return
+        # 图片有体积上限，超限直接拒收
+        if content_length > CLIPBOARD_MAX_IMAGE + 16384:
+            self._send_json(
+                {"error": f"图片过大（上限 {CLIPBOARD_MAX_IMAGE_MB}MB）"}, 413
+            )
+            return
+
         img_data = None
         mime = "image/png"
-        for part in parts:
-            if not part or part.strip() == b"--":
-                continue
-            if part.startswith(b"\r\n"):
-                part = part[2:]
-            if part.endswith(b"\r\n"):
-                part = part[:-2]
-            he = part.find(b"\r\n\r\n")
-            if he == -1:
-                continue
-            hb = part[:he].decode("utf-8", errors="ignore")
-            content = part[he + 4:]
-            is_file = False
-            for line in hb.split("\r\n"):
-                if "filename=" in line:
-                    m = re.search(r'filename="([^"]*)"', line)
-                    if m and m.group(1):
-                        is_file = True
-                        mime = mimetypes.guess_type(m.group(1))[0] or "image/png"
-            if is_file and content:
-                img_data = content
+        tmp_files = []
+        try:
+            for headers_text, kind, value in self._iter_multipart(
+                boundary, content_length, max_file_bytes=CLIPBOARD_MAX_IMAGE
+            ):
+                if kind != "file":
+                    continue
+                tmp_path, filename, size, too_big = value
+                tmp_files.append(tmp_path)
+                if too_big:
+                    break
+                mime = mimetypes.guess_type(filename or "")[0] or "image/png"
+                with open(tmp_path, "rb") as f:
+                    img_data = f.read()
                 break
+        except Exception as e:
+            self._send_json({"error": f"图片上传失败: {e}"}, 500)
+            return
+        finally:
+            for p in tmp_files:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
         if not img_data:
-            self._send_json({"error": "未找到图片数据"}, 400)
+            self._send_json({"error": f"未找到图片数据或图片超过 {CLIPBOARD_MAX_IMAGE_MB}MB"}, 400)
             return
         cid = uuid.uuid4().hex
         ext = mimetypes.guess_extension(mime) or ".png"
@@ -631,20 +821,28 @@ def main():
     os.makedirs(SHARE_DIR, exist_ok=True)
     os.makedirs(WEB_DIR, exist_ok=True)
     ensure_data_dirs()
+    cleanup_spool()
 
     server = ThreadingHTTPServer((HOST, PORT), FileHandler)
 
     ip = get_local_ip()
+    loopback_only = HOST in ("127.0.0.1", "localhost", "::1")
     print("=" * 52)
     print("  HTTP 文件共享服务器已启动（网页版）")
     print("=" * 52)
-    print(f"  本机 IP    : {ip}")
-    print(f"  访问地址   : http://{ip}:{PORT}")
+    print(f"  监听地址   : {HOST}:{PORT}" + ("（仅本机，未开公网）" if loopback_only else ""))
     print(f"  共享目录   : {SHARE_DIR}")
+    print(f"  数据目录   : {DATA_DIR}")
+    print(f"  上传上限   : {str(MAX_UPLOAD_MB) + ' MB' if MAX_UPLOAD_MB else '不限'}")
     print(f"  权限       : 上传 + 下载 + 删除")
     print("=" * 52)
-    print("  局域网内其他设备用浏览器打开：")
-    print(f"    http://{ip}:{PORT}")
+    if loopback_only:
+        print("  已绑定回环地址，需通过 SSH 隧道访问。本机执行：")
+        print(f"    ssh -N -L {PORT}:127.0.0.1:{PORT} <你的服务器别名>")
+        print(f"  然后浏览器打开 http://127.0.0.1:{PORT}")
+    else:
+        print("  同一局域网内的设备用浏览器打开：")
+        print(f"    http://{ip}:{PORT}")
     print("-" * 52)
     print("  按 Ctrl+C 停止服务器")
     print()

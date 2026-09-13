@@ -1,0 +1,37 @@
+[Unit]
+Description=LAN File Share (Web) - 局域网文件共享
+Documentation=https://github.com/lindakun/ftp-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fileshare
+Group=fileshare
+WorkingDirectory=/opt/fileshare
+EnvironmentFile=/etc/fileshare/env
+ExecStart=/usr/bin/python3 /opt/fileshare/http_server.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fileshare
+
+# 内存上限：本服务只搬运文件，超限就被 systemd 单独掐掉，
+# 不会连累同机运行的 sing-box / nginx 等服务
+MemoryHigh=192M
+MemoryMax=256M
+
+# 安全加固
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/lib/fileshare
+
+[Install]
+WantedBy=multi-user.target

@@ -59,6 +59,12 @@ def get_local_ip():
                 ["ipconfig"], capture_output=True, timeout=3
             ).stdout.decode("gbk", errors="ignore")
             ips = re.findall(r"IPv4[^\d]*([\d.]+)", out)
+        elif sys.platform == "darwin":
+            # macOS 没有 ip 命令，用 ifconfig（只取 inet，排除 inet6）
+            out = subprocess.run(
+                ["ifconfig"], capture_output=True, timeout=3
+            ).stdout.decode(errors="ignore")
+            ips = re.findall(r"inet (\d+\.\d+\.\d+\.\d+)", out)
         else:
             out = subprocess.run(
                 ["ip", "-4", "addr"], capture_output=True, timeout=3

@@ -111,6 +111,46 @@ def safe_join(base, *paths):
     return None
 
 
+def clean_rel_path(raw):
+    """清洗上传文件携带的相对路径，返回 `a/b/c.txt` 形式的安全相对路径。
+
+    兼容三种来源：
+      - 普通上传：只有文件名
+      - 文件夹上传（webkitdirectory / webkitRelativePath）：a/b/c.txt
+      - 拖拽目录或 Windows 来源：a\\b\\c.txt、C:\\x\\y.txt
+
+    丢弃空段、`.`、`..` 与控制字符，因此 `../../etc/passwd` 会被压成 `etc/passwd`，
+    永远逃不出共享根目录。返回 None 表示没有可用路径。
+    """
+    if not raw:
+        return None
+    s = raw.replace("\\", "/")
+    if re.match(r"^[A-Za-z]:", s):  # 去掉 Windows 盘符
+        s = s[2:]
+    parts = []
+    for seg in s.split("/"):
+        # 去掉控制字符与路径分隔符本身
+        seg = "".join(ch for ch in seg if ch >= " " and ch not in "/\\")
+        seg = seg.strip()
+        if not seg or seg in (".", ".."):
+            continue
+        parts.append(seg)
+    return "/".join(parts) if parts else None
+
+
+def unique_path(path):
+    """目标路径若已被同名目录占用，追加后缀避让，避免覆盖失败。"""
+    if not os.path.isdir(path):
+        return path
+    d = os.path.dirname(path)
+    stem, ext = os.path.splitext(os.path.basename(path))
+    for i in range(1, 100):
+        cand = os.path.join(d, f"{stem} (文件{i}){ext}")
+        if not os.path.exists(cand):
+            return cand
+    return path
+
+
 def human_size(size):
     """把字节数转成人类可读大小。"""
     for unit in ["B", "KB", "MB", "GB", "TB"]:
@@ -442,19 +482,31 @@ class FileHandler(BaseHTTPRequestHandler):
                 )
                 yield headers_text, "field", bytes(val)
 
-    def _save_upload(self, tmp_path, filename, rel_dir):
-        """把中转文件搬进共享目录。同盘时是瞬时 rename，不产生额外拷贝。"""
-        filename = os.path.basename(filename)
-        if not filename:
+    def _save_upload(self, tmp_path, raw_name, rel_dir):
+        """把中转文件搬进共享目录，保留上传时的相对路径结构。
+
+        raw_name 形如 `file.txt`（普通上传）或 `dir/sub/file.txt`（文件夹上传），
+        rel_dir 是本次上传的目标根目录。返回落盘后的相对路径，失败返回 None。
+        同盘时用 os.replace，是瞬时 rename，不产生额外拷贝。
+        """
+        rel = clean_rel_path(raw_name)
+        if not rel:
             return None
-        target_dir = safe_join(SHARE_DIR, rel_dir) or SHARE_DIR
-        os.makedirs(target_dir, exist_ok=True)
-        target_path = os.path.join(target_dir, filename)
+        base_rel = clean_rel_path(rel_dir) or ""
+        target_path = safe_join(SHARE_DIR, base_rel, *rel.split("/"))
+        if target_path is None:
+            return None
+        target_dir = os.path.dirname(target_path)
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+        except OSError:
+            return None
+        target_path = unique_path(target_path)
         try:
             os.replace(tmp_path, target_path)
         except OSError:
             shutil.move(tmp_path, target_path)  # 跨文件系统时退化为拷贝
-        return filename
+        return os.path.relpath(target_path, SHARE_DIR).replace(os.sep, "/")
 
     # ---- POST 处理 ----
 
@@ -483,6 +535,7 @@ class FileHandler(BaseHTTPRequestHandler):
 
         uploaded = []
         oversize = []
+        skipped = []
         tmp_files = []
         rel_dir = ""  # dir 字段可能在前面的 part，需跨 part 保留
 
@@ -495,11 +548,13 @@ class FileHandler(BaseHTTPRequestHandler):
 
                 tmp_path, filename, size, too_big = value
                 tmp_files.append(tmp_path)
+                rel_name = clean_rel_path(filename)
                 if too_big:
-                    oversize.append(os.path.basename(filename) or "?")
+                    oversize.append(rel_name or "?")
                     continue
                 saved = self._save_upload(tmp_path, filename, rel_dir)
                 if saved is None:
+                    skipped.append(rel_name or "?")
                     continue
                 tmp_files.remove(tmp_path)
                 uploaded.append(saved)
@@ -515,13 +570,21 @@ class FileHandler(BaseHTTPRequestHandler):
 
         if not uploaded and oversize:
             self._send_json(
-                {"error": f"文件超过上限 {MAX_UPLOAD_MB}MB：{', '.join(oversize)}"}, 413
+                {"error": f"文件超过上限 {MAX_UPLOAD_MB}MB：{', '.join(oversize[:5])}"}, 413
             )
             return
 
-        resp = {"uploaded": uploaded, "count": len(uploaded)}
+        resp = {
+            "uploaded": uploaded[:500],
+            "count": len(uploaded),
+            "dir": clean_rel_path(rel_dir) or "",
+        }
+        if len(uploaded) > 500:
+            resp["truncated"] = True
         if oversize:
-            resp["oversize"] = oversize
+            resp["oversize"] = oversize[:50]
+        if skipped:
+            resp["skipped"] = skipped[:50]
         self._send_json(resp)
 
     def _api_mkdir(self):

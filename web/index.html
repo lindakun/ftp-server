@@ -65,6 +65,21 @@
 
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
 
+  /* 上传目标目录提示 */
+  .upload-target {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    font-size: 13px; color: var(--text-3);
+    margin: -4px 0 12px;
+  }
+  .upload-target .ut-path {
+    color: var(--primary); cursor: pointer;
+    background: rgba(64,158,255,0.08);
+    padding: 3px 10px; border-radius: 12px;
+    max-width: 420px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .upload-target .ut-path:hover { background: rgba(64,158,255,0.16); }
+
   /* 按钮 */
   .btn {
     padding: 8px 16px;
@@ -290,7 +305,14 @@
   <div id="fileView">
     <div class="toolbar">
       <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">📤 上传文件</button>
+      <button class="btn btn-ghost" onclick="document.getElementById('dirInput').click()">📁 上传文件夹</button>
       <button class="btn btn-ghost" onclick="mkdir()">🗂 新建文件夹</button>
+    </div>
+
+    <div class="upload-target">
+      <span>上传到</span>
+      <span class="ut-path" id="uploadPathText" onclick="editUploadTarget()" title="点击修改目标目录">/</span>
+      <span class="clip-hint">点路径可改；也可直接拖文件夹进来</span>
     </div>
 
     <div class="breadcrumb" id="breadcrumb"></div>
@@ -317,6 +339,7 @@
       <div class="empty"><div class="big-icon">📂</div>加载中...</div>
     </div>
     <input type="file" id="fileInput" multiple>
+    <input type="file" id="dirInput" webkitdirectory directory multiple>
   </div>
 
   <!-- 共享剪切板视图 -->
@@ -388,6 +411,8 @@ function switchView(v) {
 // ================= 文件视图 =================
 async function loadList(path) {
   currentPath = path || '';
+  uploadTarget = currentPath;   // 切换目录时，上传目标默认跟随当前目录
+  updateUploadTargetText();
   try {
     const data = await api('/api/list?path=' + encodeURIComponent(currentPath));
     renderBreadcrumb(data.path);
@@ -554,55 +579,184 @@ async function batchDelete() {
 }
 
 // ---- 上传 ----
+let uploadTarget = '';                       // 上传目标目录（相对共享根），默认跟随当前浏览目录
+const BATCH_MAX_FILES = 20;                  // 单批最多文件数
+const BATCH_MAX_BYTES = 32 * 1024 * 1024;    // 单批最大字节数
+
 document.getElementById('fileInput').addEventListener('change', function(e) {
-  uploadFiles(e.target.files);
+  uploadItems(filesToItems(e.target.files));
   e.target.value = '';
 });
 
-function uploadFiles(files) {
-  if (!files.length) return;
-  const bar = document.getElementById('uploadBar');
-  bar.style.display = 'block';
+document.getElementById('dirInput').addEventListener('change', function(e) {
+  uploadItems(filesToItems(e.target.files));
+  e.target.value = '';
+});
 
-  const formData = new FormData();
-  formData.append('dir', currentPath);
-  for (const f of files) formData.append('files', f, f.name);
-
-  const xhr = new XMLHttpRequest();
-  xhr.upload.addEventListener('progress', e => {
-    if (e.lengthComputable) {
-      const pct = Math.round(e.loaded / e.total * 100);
-      document.getElementById('progressFill').style.width = pct + '%';
-      document.getElementById('uploadText').textContent = `上传中... ${pct}%`;
-    }
-  });
-  xhr.addEventListener('load', () => {
-    bar.style.display = 'none';
-    document.getElementById('progressFill').style.width = '0%';
-    try {
-      const data = JSON.parse(xhr.responseText);
-      if (xhr.status === 200) {
-        toast(`成功上传 ${data.count} 个文件`, 'success');
-        loadList(currentPath);
-      } else {
-        toast(data.error || '上传失败', 'error');
-      }
-    } catch (e) { toast('上传失败', 'error'); }
-  });
-  xhr.addEventListener('error', () => { bar.style.display = 'none'; toast('上传失败', 'error'); });
-  xhr.open('POST', '/api/upload');
-  xhr.send(formData);
+// FileList -> [{file, rel}]，文件夹上传时用 webkitRelativePath 保留目录结构
+function filesToItems(fileList) {
+  const out = [];
+  for (const f of fileList) {
+    const rel = f.webkitRelativePath || f.relativePath || '';
+    out.push({ file: f, rel: rel || f.name });
+  }
+  return out;
 }
 
-// ---- 拖拽上传 ----
+function updateUploadTargetText() {
+  const el = document.getElementById('uploadPathText');
+  if (el) el.textContent = uploadTarget ? '/' + uploadTarget : '/ （根目录）';
+}
+
+function editUploadTarget() {
+  const v = prompt('上传到哪个目录？\n（相对于共享根目录，留空表示根目录）', uploadTarget || '');
+  if (v === null) return;
+  uploadTarget = String(v).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim();
+  updateUploadTargetText();
+  toast(uploadTarget ? `上传目标已改为 /${uploadTarget}` : '上传目标已改为根目录');
+}
+
+// 按文件数与总字节数分批，避免一次请求塞进整个大文件夹
+function makeBatches(items) {
+  const batches = [];
+  let cur = [], bytes = 0;
+  for (const it of items) {
+    const sz = it.file.size || 0;
+    if (cur.length && (cur.length >= BATCH_MAX_FILES || bytes + sz > BATCH_MAX_BYTES)) {
+      batches.push(cur);
+      cur = [];
+      bytes = 0;
+    }
+    cur.push(it);
+    bytes += sz;
+  }
+  if (cur.length) batches.push(cur);
+  return batches;
+}
+
+function uploadBatch(batch, target, onProgress) {
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append('dir', target);
+    for (const it of batch) fd.append('files', it.file, it.rel);
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener('progress', e => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded);
+    });
+    xhr.addEventListener('load', () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch (err) { /* 非 JSON 响应 */ }
+      if (xhr.status === 200) resolve(data);
+      else reject(new Error(data.error || `上传失败（HTTP ${xhr.status}）`));
+    });
+    xhr.addEventListener('error', () => reject(new Error('网络中断')));
+    xhr.open('POST', '/api/upload');
+    xhr.send(fd);
+  });
+}
+
+function setUploadProgress(pct, text) {
+  document.getElementById('progressFill').style.width = pct + '%';
+  document.getElementById('uploadText').textContent = text;
+}
+
+async function uploadItems(items) {
+  if (!items || !items.length) return;
+  const target = uploadTarget || '';
+  const batches = makeBatches(items);
+  const totalBytes = items.reduce((s, x) => s + (x.file.size || 0), 0);
+  const bar = document.getElementById('uploadBar');
+  bar.style.display = 'block';
+  setUploadProgress(0, `准备上传 ${items.length} 个文件...`);
+
+  let okCount = 0, doneFiles = 0, doneBytes = 0;
+  const failed = [], oversize = [];
+
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+    const range = `${doneFiles + 1}-${doneFiles + batch.length}`;
+    const baseText = `上传中 ${range}/${items.length} 个文件（第 ${i + 1}/${batches.length} 批）`;
+    setUploadProgress(totalBytes ? Math.round(doneBytes / totalBytes * 100) : 0, baseText);
+    try {
+      const data = await uploadBatch(batch, target, loaded => {
+        const pct = totalBytes ? Math.round((doneBytes + loaded) / totalBytes * 100) : 0;
+        setUploadProgress(pct, `${baseText} · ${pct}%`);
+      });
+      okCount += data.count || 0;
+      if (data.oversize) oversize.push(...data.oversize);
+      if (data.skipped) failed.push(...data.skipped);
+    } catch (e) {
+      failed.push(...batch.map(x => x.rel));
+      if (batches.length === 1) toast(e.message, 'error');
+    }
+    doneFiles += batch.length;
+    doneBytes += batch.reduce((s, x) => s + (x.file.size || 0), 0);
+  }
+
+  bar.style.display = 'none';
+  setUploadProgress(0, '上传中...');
+
+  if (okCount) {
+    toast(`已上传 ${okCount} 个文件到 ${target ? '/' + target : '根目录'}`, 'success');
+    loadList(currentPath);
+  }
+  if (oversize.length) toast(`${oversize.length} 个文件超过大小上限，已跳过`, 'error');
+  if (failed.length) toast(`${failed.length} 个文件上传失败`, 'error');
+  if (!okCount && !oversize.length && !failed.length) toast('没有可上传的文件', 'error');
+}
+
+// ---- 拖拽上传（支持拖文件夹）----
+async function itemsFromDataTransfer(dt) {
+  const items = dt.items;
+  if (!items || !items.length || !items[0].webkitGetAsEntry) {
+    return filesToItems(dt.files);   // 浏览器不支持目录遍历时降级为普通文件
+  }
+  // webkitGetAsEntry 必须同步调用，异步之后 items 会失效
+  const entries = [];
+  for (const it of items) {
+    if (it.kind !== 'file') continue;
+    const en = it.webkitGetAsEntry();
+    if (en) entries.push(en);
+  }
+  const out = [];
+  for (const en of entries) await walkEntry(en, '', out);
+  return out;
+}
+
+function walkEntry(entry, prefix, out) {
+  return new Promise(resolve => {
+    if (entry.isFile) {
+      entry.file(f => {
+        out.push({ file: f, rel: prefix ? prefix + '/' + f.name : f.name });
+        resolve();
+      }, () => resolve());
+    } else if (entry.isDirectory) {
+      const dirPrefix = prefix ? prefix + '/' + entry.name : entry.name;
+      const reader = entry.createReader();
+      // readEntries 每次最多返回 100 项，必须反复读到空数组为止
+      const readMore = () => {
+        reader.readEntries(async batch => {
+          if (!batch.length) { resolve(); return; }
+          for (const e of batch) await walkEntry(e, dirPrefix, out);
+          readMore();
+        }, () => resolve());
+      };
+      readMore();
+    } else {
+      resolve();
+    }
+  });
+}
+
 let dragCounter = 0;
 window.addEventListener('dragenter', e => {
-  if (currentView === 'ftp') return;
   e.preventDefault();
   dragCounter++;
-  document.getElementById('dropZone').style.display = 'block';
   const dz = document.getElementById('dropZone');
-  dz.textContent = currentView === 'clip' ? '松开鼠标即可上传图片到剪切板' : '松开鼠标即可上传文件';
+  dz.style.display = 'block';
+  dz.textContent = currentView === 'clip'
+    ? '松开鼠标即可上传图片到剪切板'
+    : '松开鼠标即可上传文件或文件夹';
   setTimeout(() => dz.classList.add('active'), 0);
 });
 window.addEventListener('dragleave', e => {
@@ -614,20 +768,19 @@ window.addEventListener('dragleave', e => {
   }
 });
 window.addEventListener('dragover', e => e.preventDefault());
-window.addEventListener('drop', e => {
+window.addEventListener('drop', async e => {
   e.preventDefault();
   dragCounter = 0;
   document.getElementById('dropZone').classList.remove('active');
   document.getElementById('dropZone').style.display = 'none';
-  const files = e.dataTransfer.files;
-  if (!files.length) return;
   if (currentView === 'clip') {
-    for (const f of files) {
+    for (const f of e.dataTransfer.files) {
       if (f.type.startsWith('image/')) uploadClipImage(f);
     }
-  } else {
-    uploadFiles(files);
+    return;
   }
+  const items = await itemsFromDataTransfer(e.dataTransfer);
+  if (items.length) uploadItems(items);
 });
 
 // ---- 新建文件夹 ----

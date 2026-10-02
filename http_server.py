@@ -502,6 +502,9 @@ class FileHandler(BaseHTTPRequestHandler):
         except OSError:
             return None
         target_path = unique_path(target_path)
+        # mkstemp 默认是 0600；正式发布前开放共享文件读取，避免曲库扫描首次访问被拒绝。
+        # 保留中转期间的私有权限，跨盘搬运也会继承这里设置的权限。
+        os.chmod(tmp_path, 0o644)
         try:
             os.replace(tmp_path, target_path)
         except OSError:

@@ -305,6 +305,14 @@ schtasks /query /tn FileShareWeb /v  # 查看状态
 
 服务器默认 UTF-8。FTP 老客户端可在设置里把编码改成 UTF-8。
 
+**Q: 上传的音乐如何自动进入 Navidrome 曲库？**
+
+将文件上传到 Navidrome 的 `MusicFolder` 对应目录（或其子目录）。网页版会在发布文件前
+将权限设为 `0644`，让 Navidrome 能立即读取；单曲和文件夹上传都适用，中转文件仍为 `0600`。
+Navidrome 的目录监视会自动触发扫描，建议同时配置 `Scanner.Schedule = "@every 2m"`
+作为兜底。上传完成不等于索引已经完成，扫描结束后即可检索，无需手动修改权限或重启服务。
+音频必须是 Navidrome 支持的有效格式；目录本身也需要允许 Navidrome 用户访问。
+
 **Q: 剪切板时间差 8 小时？**
 
 服务器是 UTC 时区。在 `/etc/fileshare/env` 里加 `TZ=Asia/Shanghai` 后重启服务。

@@ -10,6 +10,7 @@
 """
 
 import json
+import errno
 import os
 import re
 import shutil
@@ -45,7 +46,7 @@ CLIPBOARD_FILES_DIR = os.path.join(DATA_DIR, "clipboard_files")
 SPOOL_DIR = os.path.join(DATA_DIR, ".spool")
 
 # 单文件上传上限（MB），0 = 不限制。超限的文件会被拒绝并丢弃。
-MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", 2048))
+MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", 4096))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024 if MAX_UPLOAD_MB > 0 else 0
 
 CLIPBOARD_MAX_ENTRIES = int(os.environ.get("CLIPBOARD_MAX_ENTRIES", 200))
@@ -54,6 +55,8 @@ CLIPBOARD_MAX_TEXT = 100 * 1024
 CLIPBOARD_MAX_IMAGE_MB = int(os.environ.get("CLIPBOARD_MAX_IMAGE_MB", 20))
 CLIPBOARD_MAX_IMAGE = CLIPBOARD_MAX_IMAGE_MB * 1024 * 1024
 clipboard_lock = threading.Lock()
+# 限制同时落盘的上传数，避免多个页面同时上传抢占磁盘。
+upload_slots = threading.BoundedSemaphore(2)
 
 # 文件 IO 分块大小（流式读写用）
 CHUNK_SIZE = 64 * 1024
@@ -385,6 +388,8 @@ class FileHandler(BaseHTTPRequestHandler):
         while True:
             idx = buf.find(sep)
             if idx != -1:
+                if limit and written + idx > limit:
+                    return written, True
                 sink(bytes(buf[:idx]))
                 written += idx
                 del buf[:idx + len(sep)]
@@ -398,7 +403,7 @@ class FileHandler(BaseHTTPRequestHandler):
                 if limit and written > limit:
                     return written, True
             if not fill():
-                return written, False
+                raise ValueError("上传数据不完整，未收到文件结束边界，请重新上传")
 
     def _iter_multipart(self, boundary, content_length, max_file_bytes=None):
         """流式解析 multipart/form-data，逐个 yield (headers_text, kind, value)。
@@ -420,33 +425,52 @@ class FileHandler(BaseHTTPRequestHandler):
                 return False
             chunk = self.rfile.read(min(CHUNK_SIZE, remaining[0]))
             if not chunk:
-                remaining[0] = 0
-                return False
+                raise ValueError("上传连接提前断开，请重新上传")
             remaining[0] -= len(chunk)
             buf.extend(chunk)
             return True
 
+        def check_part_end():
+            # 发布文件前确认下一个边界有效，最后一段还要收齐声明的请求长度。
+            while len(buf) < 2:
+                if not fill():
+                    raise ValueError("上传结束边界不完整")
+            if buf[:2] == b"--":
+                while remaining[0]:
+                    if len(buf) > 4:
+                        raise ValueError("上传结束边界格式错误")
+                    fill()
+                if bytes(buf) not in (b"--", b"--\r\n"):
+                    raise ValueError("上传结束边界格式错误")
+            elif buf[:2] != CRLF:
+                raise ValueError("上传分段边界格式错误")
+
         # 1) 定位第一个 boundary
         while buf.find(delim) == -1:
+            if len(buf) > CHUNK_SIZE:
+                raise ValueError("上传起始边界无效")
             if not fill():
-                return
+                raise ValueError("上传起始边界缺失")
         del buf[:buf.find(delim) + len(delim)]
 
         while True:
             # 2) 判断是结束标记 "--" 还是下一个 part 的 CRLF
             while len(buf) < 2:
                 if not fill():
-                    return
+                    raise ValueError("上传结束边界不完整")
             if bytes(buf[:2]) == b"--":
+                check_part_end()
                 return
             if bytes(buf[:2]) != CRLF:
-                return  # 格式异常，放弃后续解析
+                raise ValueError("上传分段边界格式错误")
             del buf[:2]
 
             # 3) 读 part 头部
             while buf.find(CRLF + CRLF) == -1:
+                if len(buf) > CHUNK_SIZE:
+                    raise ValueError("上传分段头部过大")
                 if not fill():
-                    return
+                    raise ValueError("上传分段头部不完整")
             hdr_end = buf.find(CRLF + CRLF)
             headers_text = bytes(buf[:hdr_end]).decode("utf-8", errors="ignore")
             del buf[:hdr_end + 4]
@@ -463,23 +487,29 @@ class FileHandler(BaseHTTPRequestHandler):
             if filename is not None and filename != "":
                 # 文件字段：流式落盘到中转目录
                 fd, tmp_path = tempfile.mkstemp(prefix="up_", dir=SPOOL_DIR)
-                fh = os.fdopen(fd, "wb")
                 try:
-                    written, too_big = self._pump_until(
-                        buf, fill, sep, tail_keep, fh.write, limit
-                    )
-                finally:
-                    fh.close()
-                if too_big:
-                    # 超限：丢弃剩余内容，但必须把流消费干净，否则后续 part 解析错位
-                    self._pump_until(buf, fill, sep, tail_keep, lambda b: None)
+                    with os.fdopen(fd, "wb") as fh:
+                        written, too_big = self._pump_until(
+                            buf, fill, sep, tail_keep, fh.write, limit
+                        )
+                    if too_big:
+                        # 超限：消费剩余内容，保证后续文件仍可解析。
+                        self._pump_until(buf, fill, sep, tail_keep, lambda b: None)
+                    check_part_end()
+                except BaseException:
+                    # 尚未 yield 的文件也必须清理，包括断流、超时和磁盘写入失败。
+                    os.remove(tmp_path)
+                    raise
                 yield headers_text, "file", (tmp_path, filename, written, too_big)
             else:
                 # 普通字段（dir 等）：内容很小，直接累到内存
                 val = bytearray()
-                self._pump_until(
+                _, too_big = self._pump_until(
                     buf, fill, sep, tail_keep, val.extend, CLIPBOARD_MAX_TEXT
                 )
+                if too_big:
+                    raise ValueError("上传表单字段过大")
+                check_part_end()
                 yield headers_text, "field", bytes(val)
 
     def _save_upload(self, tmp_path, raw_name, rel_dir):
@@ -507,14 +537,38 @@ class FileHandler(BaseHTTPRequestHandler):
         os.chmod(tmp_path, 0o644)
         try:
             os.replace(tmp_path, target_path)
-        except OSError:
-            shutil.move(tmp_path, target_path)  # 跨文件系统时退化为拷贝
+        except OSError as e:
+            if e.errno != errno.EXDEV and getattr(e, "winerror", None) != 17:
+                raise
+            # 跨盘先复制到目标盘临时文件，完成后发布，避免失败覆盖原文件。
+            fd, staged = tempfile.mkstemp(prefix="up_", dir=target_dir)
+            os.close(fd)
+            try:
+                shutil.copyfile(tmp_path, staged)
+                os.chmod(staged, 0o644)
+                os.replace(staged, target_path)
+                os.remove(tmp_path)
+            finally:
+                if os.path.exists(staged):
+                    os.remove(staged)
         return os.path.relpath(target_path, SHARE_DIR).replace(os.sep, "/")
 
     # ---- POST 处理 ----
 
     def _api_upload(self):
         """处理文件上传（multipart/form-data）。"""
+        if not upload_slots.acquire(blocking=False):
+            self.close_connection = True
+            self._send_json({"error": "正在处理其他上传，请稍后重试"}, 503)
+            return
+        try:
+            self._handle_upload()
+        finally:
+            upload_slots.release()
+
+    def _handle_upload(self):
+        # 未读完请求体时关闭连接，防止残余数据被解释成下一条请求。
+        self.close_connection = True
         ctype = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in ctype:
             self._send_json({"error": "需 multipart 上传"}, 400)
@@ -527,11 +581,15 @@ class FileHandler(BaseHTTPRequestHandler):
             if part.startswith("boundary="):
                 boundary = part[len("boundary="):].strip('"')
                 break
-        if not boundary:
+        if not boundary or len(boundary) > 200:
             self._send_json({"error": "缺少 boundary"}, 400)
             return
 
-        content_length = int(self.headers.get("Content-Length", 0))
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            self._send_json({"error": "请求长度无效"}, 400)
+            return
         if content_length <= 0:
             self._send_json({"error": "请求体为空"}, 400)
             return
@@ -543,6 +601,11 @@ class FileHandler(BaseHTTPRequestHandler):
         rel_dir = ""  # dir 字段可能在前面的 part，需跨 part 保留
 
         try:
+            # 同盘不会重复占用整份文件；跨盘则两边都要能容纳当前请求。
+            for directory in (SPOOL_DIR, SHARE_DIR):
+                if shutil.disk_usage(directory).free < content_length + 64 * 1024 * 1024:
+                    self._send_json({"error": "磁盘可用空间不足，请清理后重新上传"}, 507)
+                    return
             for headers_text, kind, value in self._iter_multipart(boundary, content_length):
                 if kind == "field":
                     if 'name="dir"' in headers_text:
@@ -561,6 +624,12 @@ class FileHandler(BaseHTTPRequestHandler):
                     continue
                 tmp_files.remove(tmp_path)
                 uploaded.append(saved)
+        except socket.timeout:
+            self._send_json({"error": "上传连接连续 10 分钟没有数据，请重新上传"}, 408)
+            return
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+            return
         except Exception as e:
             self._send_json({"error": f"上传失败: {e}"}, 500)
             return

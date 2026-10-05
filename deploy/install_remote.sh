@@ -9,7 +9,7 @@
 # 这个脚本做四件事（可重复执行，幂等）：
 #   1. 建系统用户 fileshare 与数据目录 /var/lib/fileshare
 #   2. 同步代码到 /opt/fileshare（已有仓库则 pull）
-#   3. 安装配置 /etc/fileshare/env（已存在则保留，不覆盖）
+#   3. 安装配置 /etc/fileshare/env（保留自定义配置，升级旧默认上传上限）
 #   4. 安装 systemd 单元并启动
 #
 set -euo pipefail
@@ -57,7 +57,9 @@ fi
 echo "==> 3/5 安装配置 $CONF_DIR/env"
 install -d -m 0755 "$CONF_DIR"
 if [ -f "$CONF_DIR/env" ]; then
-  echo "    已存在，保留现有配置（要重置就删掉它再跑一次）"
+  # 将旧的默认 2GiB 上限升级为 4GiB，其他自定义值保持不变。
+  sed -i 's/^MAX_UPLOAD_MB=2048$/MAX_UPLOAD_MB=4096/' "$CONF_DIR/env"
+  echo "    保留现有配置，旧默认上传上限升级到 4096MB"
 else
   install -m 0640 -o root -g root "$APP_DIR/deploy/env.example" "$CONF_DIR/env"
   echo "    已从 env.example 生成默认配置"
@@ -69,6 +71,7 @@ systemctl daemon-reload
 
 echo "==> 5/5 启动服务"
 systemctl enable --now fileshare
+systemctl restart fileshare
 sleep 2
 systemctl --no-pager --lines=0 status fileshare || true
 

@@ -580,6 +580,7 @@ async function batchDelete() {
 
 // ---- 上传 ----
 let uploadTarget = '';                       // 上传目标目录（相对共享根），默认跟随当前浏览目录
+let uploading = false;                      // 同一页面只运行一组上传任务
 const BATCH_MAX_FILES = 20;                  // 单批最多文件数
 const BATCH_MAX_BYTES = 32 * 1024 * 1024;    // 单批最大字节数
 
@@ -647,10 +648,19 @@ function uploadBatch(batch, target, onProgress) {
       let data = {};
       try { data = JSON.parse(xhr.responseText); } catch (err) { /* 非 JSON 响应 */ }
       if (xhr.status === 200) resolve(data);
-      else reject(new Error(data.error || `上传失败（HTTP ${xhr.status}）`));
+      else {
+        const error = new Error(data.error || `上传失败（HTTP ${xhr.status}）`);
+        error.retryable = xhr.status === 408 || xhr.status === 503;
+        reject(error);
+      }
     });
-    xhr.addEventListener('error', () => reject(new Error('网络中断')));
+    xhr.addEventListener('error', () => {
+      const error = new Error('网络中断');
+      error.retryable = true;
+      reject(error);
+    });
     xhr.open('POST', '/api/upload');
+    xhr.timeout = 0;                         // 不限制总时长，由服务端检测连续无数据超时
     xhr.send(fd);
   });
 }
@@ -662,6 +672,8 @@ function setUploadProgress(pct, text) {
 
 async function uploadItems(items) {
   if (!items || !items.length) return;
+  if (uploading) { toast('已有上传任务，请等待完成', 'error'); return; }
+  uploading = true;
   const target = uploadTarget || '';
   const batches = makeBatches(items);
   const totalBytes = items.reduce((s, x) => s + (x.file.size || 0), 0);
@@ -678,10 +690,22 @@ async function uploadItems(items) {
     const baseText = `上传中 ${range}/${items.length} 个文件（第 ${i + 1}/${batches.length} 批）`;
     setUploadProgress(totalBytes ? Math.round(doneBytes / totalBytes * 100) : 0, baseText);
     try {
-      const data = await uploadBatch(batch, target, loaded => {
-        const pct = totalBytes ? Math.round((doneBytes + loaded) / totalBytes * 100) : 0;
-        setUploadProgress(pct, `${baseText} · ${pct}%`);
-      });
+      let data;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          data = await uploadBatch(batch, target, loaded => {
+            const pct = totalBytes ? Math.round((doneBytes + loaded) / totalBytes * 100) : 0;
+            setUploadProgress(pct, `${baseText} · ${pct}%`);
+          });
+          break;
+        } catch (error) {
+          // 仅对单文件网络故障重试，避免多文件批次部分成功后重复发布。
+          if (batch.length !== 1 || !error.retryable || attempt >= 2) throw error;
+          setUploadProgress(totalBytes ? Math.round(doneBytes / totalBytes * 100) : 0,
+            `${baseText} · 连接中断，${(attempt + 1) * 5} 秒后重新上传（重试 ${attempt + 1}/2）`);
+          await new Promise(resolve => setTimeout(resolve, (attempt + 1) * 5000));
+        }
+      }
       okCount += data.count || 0;
       if (data.oversize) oversize.push(...data.oversize);
       if (data.skipped) failed.push(...data.skipped);
@@ -694,6 +718,7 @@ async function uploadItems(items) {
   }
 
   bar.style.display = 'none';
+  uploading = false;
   setUploadProgress(0, '上传中...');
 
   if (okCount) {

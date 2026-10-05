@@ -26,7 +26,7 @@ class UploadPermissionsTest(unittest.TestCase):
 
                         def publish(source, destination):
                             self.assertEqual(stat.S_IMODE(os.stat(source).st_mode), 0o644)
-                            if cross_device:
+                            if cross_device and source == temporary:
                                 raise OSError(errno.EXDEV, "跨文件系统")
                             return replace(source, destination)
 

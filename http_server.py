@@ -258,7 +258,7 @@ class FileHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/download/"):
             self._api_download(path[len("/api/download/"):])
         elif path == "/api/clipboard":
-            self._api_clipboard_list()
+            self._api_clipboard_list(parsed.query)
         elif path.startswith("/api/clipboard/file/"):
             self._api_clipboard_file(path[len("/api/clipboard/file/"):])
         else:
@@ -284,6 +284,8 @@ class FileHandler(BaseHTTPRequestHandler):
             self._api_clipboard_add_image()
         elif path == "/api/clipboard/clear":
             self._api_clipboard_clear()
+        elif path == "/api/clipboard/edit":
+            self._api_clipboard_edit()
         else:
             self._send_json({"error": "Not Found"}, 404)
 
@@ -778,10 +780,44 @@ class FileHandler(BaseHTTPRequestHandler):
 
     # ---- 共享剪切板 API ----
 
-    def _api_clipboard_list(self):
+    def _api_clipboard_list(self, query):
+        """列出剪贴板条目。query 可带 q=<关键词> 做服务端过滤（仅匹配文字条目）。"""
+        params = urllib.parse.parse_qs(query)
+        q = (params.get("q", [""])[0] or "").strip().lower()
         with clipboard_lock:
             entries = _load_clipboard()
+        if q:
+            entries = [e for e in entries
+                       if e.get("type") == "text" and q in (e.get("text") or "").lower()]
         self._send_json({"items": list(reversed(entries))})
+
+    def _api_clipboard_edit(self):
+        """编辑已发布的文字条目。body: {"id": "...", "text": "..."}"""
+        data = self._read_json_body()
+        if data is None:
+            return
+        cid = data.get("id", "")
+        text = data.get("text", "")
+        if not isinstance(text, str) or not text.strip():
+            self._send_json({"error": "内容不能为空"}, 400)
+            return
+        if len(text.encode("utf-8")) > CLIPBOARD_MAX_TEXT:
+            self._send_json({"error": f"内容过大（上限 {CLIPBOARD_MAX_TEXT // 1024}KB）"}, 400)
+            return
+        with clipboard_lock:
+            entries = _load_clipboard()
+            target = next((e for e in entries if e.get("id") == cid), None)
+            if not target:
+                self._send_json({"error": "条目不存在"}, 404)
+                return
+            if target.get("type") != "text":
+                self._send_json({"error": "仅支持编辑文字条目"}, 400)
+                return
+            target["text"] = text
+            target["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _save_clipboard(entries)
+            updated = dict(target)
+        self._send_json({"ok": True, "entry": updated})
 
     def _api_clipboard_add(self):
         data = self._read_json_body()

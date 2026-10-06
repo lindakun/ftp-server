@@ -278,10 +278,53 @@
   .clip-img-box { background: #1f1f1f; border-radius: 6px; padding: 8px; text-align: center; }
   .clip-img { max-width: 100%; max-height: 320px; border-radius: 4px; cursor: zoom-in; display: inline-block; }
 
+  /* 搜索框 */
+  .clip-search {
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    width: 190px;
+    outline: none;
+    font-family: inherit;
+    color: var(--text);
+    background: var(--card);
+    transition: border-color .2s;
+  }
+  .clip-search:focus { border-color: var(--primary); }
+  .clip-search::placeholder { color: var(--text-3); }
+  .clip-search::-webkit-search-cancel-button { cursor: pointer; }
+  mark {
+    background: rgba(64,158,255,0.22);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
+  }
+
+  /* 行内编辑 */
+  .clip-edit-ta {
+    width: 100%;
+    min-height: 90px;
+    border: 1px solid var(--primary);
+    border-radius: 6px;
+    padding: 10px;
+    font-family: inherit;
+    font-size: 14px;
+    resize: vertical;
+    color: var(--text);
+    box-sizing: border-box;
+    line-height: 1.6;
+    background: #fdfefe;
+    outline: none;
+  }
+  .clip-edited { color: var(--primary); font-weight: 500; }
+
   @media (max-width: 600px) {
     .file-time { display: none; }
     .file-size { width: 60px; }
     .clip-compose .row { gap: 8px; }
+    .clip-search { width: 100%; flex: 1; }
+    .clip-toolbar-right { width: 100%; }
   }
 </style>
 </head>
@@ -356,7 +399,8 @@
 
     <div class="toolbar" style="justify-content:space-between">
       <span class="clip-section-title">📋 共享内容</span>
-      <div>
+      <div class="clip-toolbar-right" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="search" id="clipSearch" class="clip-search" placeholder="🔍 搜索共享内容..." oninput="filterClipboard()">
         <button class="btn btn-ghost btn-sm" onclick="loadClipboard()">🔄 刷新</button>
         <button class="btn btn-danger btn-sm" onclick="clearClip()">🧹 清空全部</button>
       </div>
@@ -375,6 +419,8 @@ let currentPath = '';
 let currentView = 'file';
 let selectedItems = new Set();
 let clipTexts = {};        // 文字条目 id -> 文本（供复制按钮读取，避免 HTML 注入）
+let allClipItems = [];     // 全部剪贴板条目缓存（搜索过滤用）
+let editingClipId = null;  // 正在行内编辑的条目 id
 
 // ---- 工具函数 ----
 function toast(msg, type) {
@@ -393,10 +439,22 @@ async function api(url, opts) {
 
 function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function escapeAttr(s) { return s.replace(/'/g, "\\'"); }
+function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-function linkify(text) {
-  const esc = escapeHtml(text);
+function linkifyEscaped(esc) {
   return esc.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+}
+
+function linkify(text) { return linkifyEscaped(escapeHtml(text)); }
+
+// 渲染剪贴板文本：带搜索词时按大小写不敏感匹配分段并高亮
+function renderText(text, q) {
+  if (!q) return linkify(text);
+  const esc = escapeHtml(text);
+  const qEsc = escapeRegex(escapeHtml(q));
+  const parts = esc.split(new RegExp('(' + qEsc + ')', 'gi'));
+  // 带捕获组的 split：奇数下标必是匹配段
+  return parts.map((p, i) => i % 2 === 1 ? '<mark>' + p + '</mark>' : linkifyEscaped(p)).join('');
 }
 
 // ================= 视图切换 =================
@@ -937,6 +995,7 @@ async function deleteClip(id) {
   if (!confirm('确定删除这条共享内容吗？')) return;
   try {
     await api('/api/clipboard/' + id, { method: 'DELETE' });
+    if (editingClipId === id) editingClipId = null;
     toast('已删除', 'success');
     loadClipboard();
   } catch (e) { toast(e.message, 'error'); }
@@ -946,6 +1005,7 @@ async function clearClip() {
   if (!confirm('确定清空全部共享内容吗？此操作不可恢复！')) return;
   try {
     await api('/api/clipboard/clear', { method: 'POST' });
+    editingClipId = null;
     toast('已清空', 'success');
     loadClipboard();
   } catch (e) { toast(e.message, 'error'); }
@@ -954,22 +1014,38 @@ async function clearClip() {
 async function loadClipboard() {
   try {
     const data = await api('/api/clipboard');
-    renderClipboard(data.items || []);
+    allClipItems = data.items || [];
+    renderClipboard();
   } catch (e) { toast(e.message, 'error'); }
 }
 
-function renderClipboard(items) {
+// ---- 搜索 ----
+function clipSearchQuery() {
+  const el = document.getElementById('clipSearch');
+  return el ? el.value.trim() : '';
+}
+
+function filterClipboard() {
+  renderClipboard();
+}
+
+function renderClipboard() {
+  const q = clipSearchQuery();
   const el = document.getElementById('clipList');
   clipTexts = {};
+  let items = allClipItems;
+  if (q) items = items.filter(it => it.type === 'text' && (it.text || '').toLowerCase().includes(q.toLowerCase()));
   if (!items.length) {
-    el.innerHTML = '<div class="empty"><div class="big-icon">📋</div>还没有共享内容，发布一条试试～</div>';
+    el.innerHTML = q
+      ? `<div class="empty"><div class="big-icon">🔍</div>没有匹配「${escapeHtml(q)}」的共享内容</div>`
+      : '<div class="empty"><div class="big-icon">📋</div>还没有共享内容，发布一条试试～</div>';
     return;
   }
   let html = '';
   items.forEach(it => {
     if (it.type === 'image') {
       html += `
-        <div class="clip-item">
+        <div class="clip-item" data-clip-id="${it.id}">
           <div class="meta">
             <span>🖼 图片 · ${it.created_at}</span>
             <div class="ops">
@@ -980,23 +1056,81 @@ function renderClipboard(items) {
           <div class="clip-img-box"><img class="clip-img" src="/api/clipboard/file/${it.id}" onclick="window.open(this.src)" title="点击放大 · 右键可复制图片"></div>
           <div class="clip-hint" style="margin-top:6px">右键图片 → 复制图片；或点「保存」下载</div>
         </div>`;
-    } else {
+    } else if (it.id === editingClipId) {
+      // 行内编辑态：textarea 显示原文，保存/取消走下方按钮或快捷键
       clipTexts[it.id] = it.text;
       html += `
-        <div class="clip-item">
+        <div class="clip-item" data-clip-id="${it.id}">
           <div class="meta">
-            <span>📝 文字 · ${it.created_at}</span>
+            <span>📝 文字 · ${it.created_at} · <span class="clip-edited">正在编辑</span></span>
+            <div class="ops">
+              <button class="btn btn-success btn-sm" onclick="saveClipEdit('${it.id}')">✅ 保存</button>
+              <button class="btn btn-ghost btn-sm" onclick="cancelClipEdit()">取消</button>
+            </div>
+          </div>
+          <textarea id="clipEditTa" class="clip-edit-ta">${escapeHtml(it.text)}</textarea>
+          <div class="clip-hint" style="margin-top:6px">Ctrl+Enter 保存 · Esc 取消</div>
+        </div>`;
+    } else {
+      clipTexts[it.id] = it.text;
+      const editedTag = it.updated_at ? ' · <span class="clip-edited">✏️ 已编辑</span>' : '';
+      html += `
+        <div class="clip-item" data-clip-id="${it.id}">
+          <div class="meta">
+            <span>📝 文字 · ${it.created_at}${editedTag}</span>
             <div class="ops">
               <button class="btn btn-ghost btn-sm" onclick="copyClip('${it.id}')">📋 复制</button>
+              <button class="btn btn-ghost btn-sm" onclick="editClip('${it.id}')">✏️ 编辑</button>
               <button class="btn btn-danger btn-sm" onclick="deleteClip('${it.id}')">🗑</button>
             </div>
           </div>
-          <div class="clip-text">${linkify(it.text)}</div>
+          <div class="clip-text">${renderText(it.text, q)}</div>
         </div>`;
     }
   });
   el.innerHTML = html;
+  const ta = document.getElementById('clipEditTa');
+  if (ta) {
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    ta.style.height = Math.max(90, ta.scrollHeight + 4) + 'px';
+  }
 }
+
+// ---- 行内编辑 ----
+function editClip(id) {
+  editingClipId = id;
+  renderClipboard();
+}
+
+function cancelClipEdit() {
+  editingClipId = null;
+  renderClipboard();
+}
+
+async function saveClipEdit(id) {
+  const ta = document.getElementById('clipEditTa');
+  if (!ta || !id) return;
+  const text = ta.value;
+  if (!text.trim()) { toast('内容不能为空', 'error'); return; }
+  try {
+    await api('/api/clipboard/edit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, text })
+    });
+    editingClipId = null;
+    toast('已保存修改', 'success');
+    loadClipboard();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// 编辑框快捷键：Esc 取消，Ctrl/Cmd+Enter 保存
+document.addEventListener('keydown', e => {
+  if (!editingClipId || !e.target || e.target.id !== 'clipEditTa') return;
+  if (e.key === 'Escape') { e.preventDefault(); cancelClipEdit(); }
+  else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveClipEdit(editingClipId); }
+});
 
 // 初始化
 loadList('');

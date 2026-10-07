@@ -1,5 +1,6 @@
 """安装 NAS 主服务或 Windows 剪切板入口；只生成运行配置和服务定义。"""
 import argparse
+from datetime import datetime, timedelta
 import os
 from pathlib import Path
 import subprocess
@@ -70,10 +71,12 @@ def main():
         python = str(BASE / ".venv" / "Scripts" / "python.exe")
         arguments = f'clipboard_backup.py --output "{BASE / "data" / "backups"}" --keep 24'
         xml = gen_xml("FileShareClipboardBackup", "共享剪切板备份", python, arguments, str(BASE))
-        # 启动时备份，之后每小时备份；NAS 不可达时保留已有备份。
-        xml = xml.replace("<Enabled>true</Enabled>\n    </BootTrigger>",
-                          "<Enabled>true</Enabled><Repetition><Interval>PT1H</Interval>"
-                          "<StopAtDurationEnd>false</StopAtDurationEnd></Repetition>\n    </BootTrigger>")
+        # 独立时间触发器让首次安装后立即进入每小时调度，无需等待下次开机。
+        boundary = (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        trigger = ("<TimeTrigger><Repetition><Interval>PT1H</Interval>"
+                   "<StopAtDurationEnd>false</StopAtDurationEnd></Repetition>"
+                   f"<StartBoundary>{boundary}</StartBoundary><Enabled>true</Enabled></TimeTrigger>")
+        xml = xml.replace("</Triggers>", trigger + "</Triggers>")
         xml = xml.replace("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
                           "<ExecutionTimeLimit>PT30M</ExecutionTimeLimit>")
         # XML 参数中的路径引号需转义。

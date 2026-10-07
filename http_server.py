@@ -28,6 +28,7 @@ import urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from server_config import load_config
+from clipboard_sync import ClipboardStore, ClipboardSync
 
 load_config()
 
@@ -63,6 +64,11 @@ CLIPBOARD_MAX_IMAGE = CLIPBOARD_MAX_IMAGE_MB * 1024 * 1024
 clipboard_lock = threading.Lock()
 CLIPBOARD_PRIMARY_URL = os.environ.get("CLIPBOARD_PRIMARY_URL", "").rstrip("/")
 CLIPBOARD_BACKUP_TOKEN = os.environ.get("CLIPBOARD_BACKUP_TOKEN", "")
+CLIPBOARD_NODE_ID = os.environ.get("CLIPBOARD_NODE_ID", "")
+CLIPBOARD_PEER_URL = os.environ.get("CLIPBOARD_PEER_URL", "")
+CLIPBOARD_SYNC_TOKEN = os.environ.get("CLIPBOARD_SYNC_TOKEN", "")
+clipboard_store = None
+clipboard_sync = None
 # 限制同时落盘的上传数，避免多个页面同时上传抢占磁盘。
 upload_slots = threading.BoundedSemaphore(2)
 
@@ -190,6 +196,8 @@ def cleanup_spool():
 
 
 def _load_clipboard():
+    if clipboard_store:
+        return clipboard_store.entries()
     try:
         with open(CLIPBOARD_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -201,6 +209,9 @@ def _load_clipboard():
 
 
 def _save_clipboard(entries):
+    if clipboard_store:
+        clipboard_store.save(entries)
+        return
     tmp = CLIPBOARD_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(entries, f, ensure_ascii=False, indent=2)
@@ -215,16 +226,17 @@ def _clipboard_add(entry):
     with clipboard_lock:
         entries = _load_clipboard()
         entries.append(entry)
+        removed = []
         if len(entries) > CLIPBOARD_MAX_ENTRIES:
             removed = entries[:-CLIPBOARD_MAX_ENTRIES]
-            for r in removed:
-                if r.get("type") == "image":
-                    try:
-                        os.remove(os.path.join(CLIPBOARD_FILES_DIR, r["id"] + _ext_from_mime(r.get("mime"))))
-                    except OSError:
-                        pass
             entries = entries[-CLIPBOARD_MAX_ENTRIES:]
         _save_clipboard(entries)
+        for r in removed:
+            if r.get("type") == "image":
+                try:
+                    os.remove(os.path.join(CLIPBOARD_FILES_DIR, r["id"] + _ext_from_mime(r.get("mime"))))
+                except OSError:
+                    pass
     return entry
 
 
@@ -259,6 +271,9 @@ class FileHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
+        if path == "/api/clipboard/sync" or path.startswith("/api/clipboard/sync/file/"):
+            self._api_clipboard_sync(parsed)
+            return
         if path == "/api/clipboard/backup":
             self._api_clipboard_backup()
             return
@@ -282,6 +297,9 @@ class FileHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
+        if path == "/api/clipboard/sync":
+            self._api_clipboard_sync(parsed)
+            return
         if self._proxy_clipboard(path):
             return
 
@@ -799,6 +817,35 @@ class FileHandler(BaseHTTPRequestHandler):
 
     # ---- 共享剪切板 API ----
 
+    def _api_clipboard_sync(self, parsed):
+        if not clipboard_sync:
+            self._send_json({"error": "双活未启用"}, 404)
+            return
+        expected = ("Bearer " + CLIPBOARD_SYNC_TOKEN).encode()
+        if not hmac.compare_digest(self.headers.get("Authorization", "").encode(), expected):
+            self._send_json({"error": "同步访问未授权"}, 403)
+            return
+        try:
+            if self.command == "GET" and parsed.path.startswith("/api/clipboard/sync/file/"):
+                self._api_clipboard_file(parsed.path.rsplit("/", 1)[1])
+                return
+            if self.command == "GET":
+                cursor = urllib.parse.parse_qs(parsed.query).get("after", [""])[0]
+                self._send_json({"records": clipboard_store.page(cursor)})
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            if self.headers.get("Transfer-Encoding") or not 0 < length <= 16 * 1024 * 1024:
+                self._send_json({"error": "无效同步请求长度"}, 413)
+                return
+            data = self._read_json_body()
+            if data is not None:
+                records = clipboard_sync.receive(data["records"])
+                self._send_json({"records": records})
+        except (ValueError, KeyError, TypeError):
+            self._send_json({"error": "无效同步数据"}, 400)
+        except OSError:
+            self._send_json({"error": "图片尚未完成同步，请重试"}, 503)
+
     def _proxy_clipboard(self, path):
         """入口节点只访问主服务，失败时不写入本地剪切板。"""
         if not CLIPBOARD_PRIMARY_URL or not (
@@ -865,9 +912,15 @@ class FileHandler(BaseHTTPRequestHandler):
                 entries = _load_clipboard()
                 with zipfile.ZipFile(snapshot, "w", zipfile.ZIP_STORED) as archive:
                     archive.writestr("clipboard.json", json.dumps(entries, ensure_ascii=False))
+                    if clipboard_store:
+                        with tempfile.TemporaryDirectory(dir=DATA_DIR) as temporary:
+                            database = os.path.join(temporary, "clipboard_sync.sqlite3")
+                            clipboard_store.backup_database(database)
+                            archive.write(database, "clipboard_sync.sqlite3")
                     for entry in entries:
                         if entry.get("type") == "image":
-                            name = entry["id"] + _ext_from_mime(entry.get("mime"))
+                            name = (clipboard_store.get(entry["id"])["_file"] if clipboard_store
+                                    else entry["id"] + _ext_from_mime(entry.get("mime")))
                             archive.write(os.path.join(CLIPBOARD_FILES_DIR, name),
                                           "clipboard_files/" + name)
             size = snapshot.tell()
@@ -884,11 +937,14 @@ class FileHandler(BaseHTTPRequestHandler):
         params = urllib.parse.parse_qs(query)
         q = (params.get("q", [""])[0] or "").strip().lower()
         with clipboard_lock:
-            entries = _load_clipboard()
+            entries = clipboard_store.entries(status=True) if clipboard_store else _load_clipboard()
         if q:
             entries = [e for e in entries
                        if e.get("type") == "text" and q in (e.get("text") or "").lower()]
-        self._send_json({"items": list(reversed(entries))})
+        data = {"items": list(reversed(entries))}
+        if clipboard_store:
+            data["sync"] = {"node": CLIPBOARD_NODE_ID, "peer_online": clipboard_store.connected}
+        self._send_json(data)
 
     def _api_clipboard_edit(self):
         """编辑已发布的文字条目。body: {"id": "...", "text": "..."}"""
@@ -999,6 +1055,8 @@ class FileHandler(BaseHTTPRequestHandler):
         fpath = os.path.join(CLIPBOARD_FILES_DIR, cid + ext)
         with open(fpath, "wb") as f:
             f.write(img_data)
+            f.flush()
+            os.fsync(f.fileno())
         entry = {
             "id": cid,
             "type": "image",
@@ -1015,36 +1073,41 @@ class FileHandler(BaseHTTPRequestHandler):
             if not target:
                 self._send_json({"error": "条目不存在"}, 404)
                 return
+            new_entries = [e for e in entries if e.get("id") != cid]
+            _save_clipboard(new_entries)
             if target.get("type") == "image":
                 try:
                     os.remove(os.path.join(CLIPBOARD_FILES_DIR, target["id"] + _ext_from_mime(target.get("mime"))))
                 except OSError:
                     pass
-            new_entries = [e for e in entries if e.get("id") != cid]
-            _save_clipboard(new_entries)
         self._send_json({"ok": True})
 
     def _api_clipboard_clear(self):
         with clipboard_lock:
             entries = _load_clipboard()
+            _save_clipboard([])
             for e in entries:
                 if e.get("type") == "image":
                     try:
                         os.remove(os.path.join(CLIPBOARD_FILES_DIR, e["id"] + _ext_from_mime(e.get("mime"))))
                     except OSError:
                         pass
-            _save_clipboard([])
         self._send_json({"ok": True})
 
     def _api_clipboard_file(self, cid):
         with clipboard_lock:
             entries = _load_clipboard()
+            record = clipboard_store.get(cid) if clipboard_store else None
         entry = next((e for e in entries if e.get("id") == cid and e.get("type") == "image"), None)
         if not entry:
             self._send_json({"error": "图片不存在"}, 404)
             return
-        ext = _ext_from_mime(entry.get("mime"))
-        fpath = os.path.join(CLIPBOARD_FILES_DIR, entry["id"] + ext)
+        if clipboard_store and (not record or record.get("_deleted")):
+            self._send_json({"error": "图片不存在"}, 404)
+            return
+        name = (record["_file"] if clipboard_store
+                else entry["id"] + _ext_from_mime(entry.get("mime")))
+        fpath = os.path.join(CLIPBOARD_FILES_DIR, name)
         if not os.path.isfile(fpath):
             self._send_json({"error": "图片文件丢失"}, 404)
             return
@@ -1074,6 +1137,7 @@ class FileHandler(BaseHTTPRequestHandler):
 
 
 def main():
+    global clipboard_store, clipboard_sync
     try:
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
@@ -1093,7 +1157,16 @@ def main():
     ensure_data_dirs()
     cleanup_spool()
 
+    if CLIPBOARD_NODE_ID:
+        if CLIPBOARD_PRIMARY_URL:
+            raise ValueError("双活节点不能同时配置主服务转发")
+        clipboard_store = ClipboardStore(DATA_DIR, CLIPBOARD_NODE_ID, CLIPBOARD_MAX_ENTRIES, _ext_from_mime)
+        clipboard_sync = ClipboardSync(clipboard_store, CLIPBOARD_PEER_URL, CLIPBOARD_SYNC_TOKEN,
+                                       clipboard_lock, CLIPBOARD_MAX_IMAGE)
+
     server = ThreadingHTTPServer((HOST, PORT), FileHandler)
+    if clipboard_sync:
+        threading.Thread(target=clipboard_sync.run, daemon=True).start()
 
     ip = get_local_ip()
     loopback_only = HOST in ("127.0.0.1", "localhost", "::1")

@@ -39,7 +39,7 @@ def backup(url, token, output, keep):
         name = "clipboard-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".zip"
         result = output / name
         os.replace(temporary, result)
-        for old in sorted(output.glob("clipboard-*.zip"), reverse=True)[keep:]:
+        for old in sorted(output.glob("clipboard-[0-9]*.zip"), reverse=True)[keep:]:
             old.unlink()
         print(f"备份完成：{result}（{len(entries)} 条）")
         return result
@@ -50,9 +50,12 @@ def backup(url, token, output, keep):
 
 def main():
     load_config()
+    host = os.environ.get('HTTP_HOST', '127.0.0.1')
+    if host in ('0.0.0.0', '::'):
+        host = '127.0.0.1'
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=os.environ.get("CLIPBOARD_PRIMARY_URL") or
-                        f"http://{os.environ.get('HTTP_HOST', '127.0.0.1')}:{os.environ.get('HTTP_PORT', '8080')}")
+                        f"http://{host}:{os.environ.get('HTTP_PORT', '8080')}")
     parser.add_argument("--output", required=True)
     parser.add_argument("--keep", type=int, default=14)
     args = parser.parse_args()

@@ -85,6 +85,58 @@ Windows 上传约 40GB 新文件，建议使用 NTFS/exFAT，保留至少 50GB �
 
 ## 局域网内访问
 
+### 剪切板双活（188 NAS + 193 Windows）
+
+两台各自保存完整的剪切板文字和图片，都可以独立读写。任意一台关机或故障时，
+直接访问另一台地址即可；恢复连接后自动双向补齐。**普通共享文件不参与同步**，
+`SHARE_DIR` 始终是各自的本地目录。没有自动切换 IP 或统一网址。
+
+双活使用本地 `data/clipboard_sync.sqlite3` 保存内容、逻辑版本、同步确认和删除标记。
+Python 标准库 SQLite 事务提交后才返回本机保存成功。首次启用时导入原 JSON，
+原文件另存为 `clipboard-imported.json`；此后 SQLite 是实际数据源。
+
+- 正常联网时约每两秒检查同步，本地写入还会唤醒同步任务。
+- 两边各自新增的条目合并；同一条目的并发编辑按逻辑版本号、节点名确定一致结果。
+- 删除优先于编辑，同一 ID 的删除永久生效。删除标记不随 200 条显示上限清理。
+- 一键清空删除本机当时已知的条目，对端离线期间新增、尚未见到的条目保留。
+- 图片通过带密钥的接口传输，校验 SHA-256 后原子落盘，再提交记录与同步确认。
+- 页面区分「本机已保存，等待同步」和「已同步到两台」，并显示另一台是否在线。
+  同步确认表示该版本已在对端保存，不承诺对端今后永远在线或磁盘永不故障。
+- 一台离线期间的新内容只有本机副本，若在补同步之前磁盘损坏，仍可能丢失。
+
+启用前先备份，暂停两台服务，把当前权威副本的 JSON 和图片迁移到另一台，避免
+用旧 JSON 重新带回已经删除的内容。通过 Git 提交、推送及两台 Pull 更新代码后，
+在两台分别执行配置脚本（需要管理员权限）。两台使用不同节点名、同一同步密钥：
+
+```bash
+# NAS：CLIPBOARD_SYNC_TOKEN 从环境传入，不放进命令参数或 Git。
+sudo --preserve-env=CLIPBOARD_SYNC_TOKEN python3 /opt/fileshare-lan/deploy/configure_dual.py \
+  --node nas188 --peer http://192.168.31.193:8080
+sudo systemctl restart fileshare-lan
+```
+
+```powershell
+# Windows：先配置再启动既有 FileShareWeb 任务。
+.venv\Scripts\python.exe deploy\configure_dual.py --node win193 --peer http://192.168.31.188:8080
+Start-ScheduledTask -TaskName FileShareWeb
+```
+
+脚本保留已有端口、共享目录和备份配置，清除旧的主服务转发配置，并另存切换前
+配置。同步接口使用专用 Bearer 密钥，密钥保存在不入 Git 的私密 `server.env` 中。
+
+原有定时备份继续运行，改为各自备份本机。ZIP 包含当前 JSON 导出、图片和一致的
+SQLite 快照，涵盖删除标记。NAS 每天备份保留 14 份，Windows 开机及每小时备份
+保留 24 份。单台磁盘损坏时可从健康节点导出完整备份恢复，并保留各自节点配置。
+误删时从旧备份取回内容后重新发布为新条目；直接恢复旧 ID 会再次收到对端删除
+标记。需要整体回滚时，应暂停两台服务、保存当前数据，再将同一份完整备份恢复
+到两台（含 `clipboard_sync.sqlite3` 和图片目录），之后重新启动。
+
+验证双活及原有上传功能：
+
+```bash
+python3 -m unittest test_clipboard_dual test_clipboard_primary test_upload_integrity test_upload_permissions
+```
+
 ### NAS 主服务与 Windows 剪切板入口
 
 常年开机的 NAS 可以统一保存剪切板，Windows 保留原有网页入口。Windows 的所有
@@ -277,6 +329,9 @@ logs/                  后台运行日志目录（自动生成）
 | `CLIPBOARD_PRIMARY_URL` | 空 | 剪切板主服务地址；为空时使用本地存储 |
 | `CLIPBOARD_BACKUP_TOKEN` | 空 | 备份接口密钥；为空时禁用备份接口 |
 | `FILESHARE_CONFIG` | `<脚本目录>/server.env` | 本地运行配置文件路径 |
+| `CLIPBOARD_NODE_ID` | 空 | 双活节点唯一名称；为空时保持原有单机或转发模式 |
+| `CLIPBOARD_PEER_URL` | 空 | 剪切板双活对端地址 |
+| `CLIPBOARD_SYNC_TOKEN` | 空 | 两台共同使用的专用同步密钥 |
 | `TZ` | 系统时区 | 设 `Asia/Shanghai` 让剪切板时间显示正确 |
 
 ## 自测

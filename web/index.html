@@ -406,6 +406,7 @@
       </div>
     </div>
 
+    <div class="clip-hint" id="clipSyncStatus" role="status"></div>
     <div class="clip-list" id="clipList">
       <div class="empty"><div class="big-icon">📋</div>还没有共享内容，发布一条试试～</div>
     </div>
@@ -1017,6 +1018,9 @@ async function loadClipboard(automatic = false) {
   clipLoading = true;
   try {
     const data = await api('/api/clipboard');
+    document.getElementById('clipSyncStatus').textContent = data.sync
+      ? (data.sync.peer_online ? '另一台在线，剪切板双向同步中' : '另一台暂时离线，本机仍可读写剪切板')
+      : '';
     // 请求期间开始编辑时，保留用户尚未保存的输入。
     if (editingClipId) return;
     const changed = JSON.stringify(data.items || []) !== JSON.stringify(allClipItems);
@@ -1059,11 +1063,13 @@ function renderClipboard() {
   }
   let html = '';
   items.forEach(it => {
+    const syncTag = typeof it.synced === 'boolean'
+      ? (it.synced ? ' · 已同步到两台' : ' · 本机已保存，等待同步') : '';
     if (it.type === 'image') {
       html += `
         <div class="clip-item" data-clip-id="${it.id}">
           <div class="meta">
-            <span>🖼 图片 · ${it.created_at}</span>
+            <span>🖼 图片 · ${it.created_at}${syncTag}</span>
             <div class="ops">
               <a class="btn btn-ghost btn-sm" href="/api/clipboard/file/${it.id}" download target="_blank">⬇️ 保存</a>
               <button class="btn btn-danger btn-sm" onclick="deleteClip('${it.id}')">🗑</button>
@@ -1093,7 +1099,7 @@ function renderClipboard() {
       html += `
         <div class="clip-item" data-clip-id="${it.id}">
           <div class="meta">
-            <span>📝 文字 · ${it.created_at}${editedTag}</span>
+            <span>📝 文字 · ${it.created_at}${editedTag}${syncTag}</span>
             <div class="ops">
               <button class="btn btn-ghost btn-sm" onclick="copyClip('${it.id}')">📋 复制</button>
               <button class="btn btn-ghost btn-sm" onclick="editClip('${it.id}')">✏️ 编辑</button>

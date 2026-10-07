@@ -1,0 +1,17 @@
+[Unit]
+Description=Consistent backup of primary clipboard
+Requires=fileshare-lan.service
+After=fileshare-lan.service
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@APP_DIR@
+ExecStart=/usr/bin/python3 @APP_DIR@/clipboard_backup.py --output @DATA_ROOT@/backups --keep 14
+Environment=TZ=Asia/Shanghai
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=@DATA_ROOT@/backups
+UMask=0077

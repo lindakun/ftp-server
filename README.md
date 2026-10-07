@@ -85,6 +85,59 @@ Windows 上传约 40GB 新文件，建议使用 NTFS/exFAT，保留至少 50GB �
 
 ## 局域网内访问
 
+### NAS 主服务与 Windows 剪切板入口
+
+常年开机的 NAS 可以统一保存剪切板，Windows 保留原有网页入口。Windows 的所有
+剪切板操作（含图片、搜索、编辑、删除）转发到 NAS，普通文件操作仍使用各自本机
+的 `SHARE_DIR`。NAS 不可达时入口返回 503，不会向 Windows 本地剪切板写入。
+这属于主服务加多个入口，不提供自动故障切换。剪切板页面可见时每两秒自动检查
+更新，编辑文字时暂停刷新。
+
+主服务继续使用本地 JSON 和图片目录，无需增加数据库。运行配置放在代码目录下
+的 `server.env`（不入 Git），环境变量优先；也可用 `FILESHARE_CONFIG` 指定配置路径。
+
+首次安装前通过 Git clone / pull 获取代码，并先迁移旧主机的 `clipboard.json` 和
+`clipboard_files/`。迁移时暂停旧服务写入，保留迁移前备份，核对条目和图片后再
+启用新入口。下面两个安装命令都需要管理员权限，并从环境变量
+`CLIPBOARD_BACKUP_TOKEN` 读取同一随机密钥；不要把密钥放进 Git。
+
+```bash
+# NAS：数据目录应位于持久化数据盘；user 为可访问该目录的现有用户。
+sudo --preserve-env=CLIPBOARD_BACKUP_TOKEN python3 /opt/fileshare-lan/deploy/install_lan.py \
+  primary --host 192.168.31.188 --port 8080 \
+  --user lindakun --data-root /vol1/1000/2_工作资料/ftp-server
+```
+
+```powershell
+# Windows：在项目目录使用项目的 Python 安装入口配置及备份任务。
+.venv\Scripts\python.exe deploy\install_lan.py gateway --host 0.0.0.0 --port 8080 `
+  --primary-url http://192.168.31.188:8080
+# 停止现有 FileShareWeb 进程后重新运行任务，让配置生效。
+```
+
+安装器创建配置、数据目录与服务定义，不会改写代码。已有 `server.env` 时会停止，
+避免覆盖自定义配置。NAS 服务名为 `fileshare-lan`，备份定时器为
+`fileshare-lan-backup.timer`；Windows 保留 `FileShareWeb`，新增
+`FileShareClipboardBackup`。两台代码更新仍然只通过 Git Pull 完成。
+
+备份通过带 Bearer 密钥的 `GET /api/clipboard/backup` 拉取，在剪切板锁内生成包含
+JSON 和所引用图片的一致性 ZIP。备份先写临时文件，校验长度和 ZIP 后发布，失败时
+不覆盖已有备份。NAS 每天北京时间 03:10 附近备份、保留 14 份；Windows 开机后
+及运行期间每小时备份、保留 24 份，睡眠或关机期间无法备份。Windows 下次启动会
+继续拉取。原始剪切板仍受 `CLIPBOARD_MAX_ENTRIES`（默认 200）限制。
+
+NAS 备份目录为 `<data-root>/backups`，Windows 为 `<项目目录>/data/backups`。安装后
+应立即执行一次备份，确认两台都能生成 ZIP。也可手动运行：
+
+```bash
+python3 clipboard_backup.py --url http://192.168.31.188:8080 --output /path/to/backups --keep 14
+```
+
+恢复时先停止主服务，将选定备份中的 `clipboard.json` 和 `clipboard_files/` 解压
+到 `DATA_DIR`（先另存当前数据，使用新的图片目录），然后重启并核对条目和图片。
+备份接口未配置密钥或密钥错误时返回 403；普通网页仍沿用现有的局域网无密码访问。
+不要将服务端口转发到公网。
+
 | 客户端 | 用法 |
 |--------|------|
 | 浏览器（网页版） | 地址栏输入 `http://<服务器IP>:8080` |
@@ -221,6 +274,9 @@ logs/                  后台运行日志目录（自动生成）
 | `MAX_UPLOAD_MB` | `4096` | 单文件上传上限，`0` 表示不限制 |
 | `CLIPBOARD_MAX_IMAGE_MB` | `20` | 剪切板单张图片上限 |
 | `CLIPBOARD_MAX_ENTRIES` | `200` | 剪切板最多保留条数 |
+| `CLIPBOARD_PRIMARY_URL` | 空 | 剪切板主服务地址；为空时使用本地存储 |
+| `CLIPBOARD_BACKUP_TOKEN` | 空 | 备份接口密钥；为空时禁用备份接口 |
+| `FILESHARE_CONFIG` | `<脚本目录>/server.env` | 本地运行配置文件路径 |
 | `TZ` | 系统时区 | 设 `Asia/Shanghai` 让剪切板时间显示正确 |
 
 ## 自测

@@ -1011,13 +1011,29 @@ async function clearClip() {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-async function loadClipboard() {
+let clipLoading = false;
+async function loadClipboard(automatic = false) {
+  if (clipLoading || (automatic && editingClipId)) return;
+  clipLoading = true;
   try {
     const data = await api('/api/clipboard');
+    // 请求期间开始编辑时，保留用户尚未保存的输入。
+    if (editingClipId) return;
+    const changed = JSON.stringify(data.items || []) !== JSON.stringify(allClipItems);
     allClipItems = data.items || [];
-    renderClipboard();
-  } catch (e) { toast(e.message, 'error'); }
+    if (!automatic || changed) renderClipboard();
+  } catch (e) {
+    if (!automatic) toast(e.message, 'error');
+  } finally { clipLoading = false; }
 }
+
+// 只在剪切板页面可见时轮询，编辑过程中暂停。
+setInterval(() => {
+  if (currentView === 'clip' && !document.hidden) loadClipboard(true);
+}, 2000);
+document.addEventListener('visibilitychange', () => {
+  if (currentView === 'clip' && !document.hidden) loadClipboard(true);
+});
 
 // ---- 搜索 ----
 function clipSearchQuery() {

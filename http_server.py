@@ -22,8 +22,14 @@ import zipfile
 import mimetypes
 import threading
 import uuid
+import hmac
+import urllib.request
+import urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
+from server_config import load_config
+
+load_config()
 
 # ===== 配置区（可按需修改，均可用环境变量覆盖）=====
 
@@ -55,6 +61,8 @@ CLIPBOARD_MAX_TEXT = 100 * 1024
 CLIPBOARD_MAX_IMAGE_MB = int(os.environ.get("CLIPBOARD_MAX_IMAGE_MB", 20))
 CLIPBOARD_MAX_IMAGE = CLIPBOARD_MAX_IMAGE_MB * 1024 * 1024
 clipboard_lock = threading.Lock()
+CLIPBOARD_PRIMARY_URL = os.environ.get("CLIPBOARD_PRIMARY_URL", "").rstrip("/")
+CLIPBOARD_BACKUP_TOKEN = os.environ.get("CLIPBOARD_BACKUP_TOKEN", "")
 # 限制同时落盘的上传数，避免多个页面同时上传抢占磁盘。
 upload_slots = threading.BoundedSemaphore(2)
 
@@ -251,6 +259,12 @@ class FileHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
+        if path == "/api/clipboard/backup":
+            self._api_clipboard_backup()
+            return
+        if self._proxy_clipboard(path):
+            return
+
         if path == "/" or path == "/index.html":
             self._serve_index()
         elif path == "/api/list":
@@ -267,6 +281,9 @@ class FileHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        if self._proxy_clipboard(path):
+            return
 
         if path == "/api/upload":
             self._api_upload()
@@ -292,6 +309,8 @@ class FileHandler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if self._proxy_clipboard(path):
+            return
         if path.startswith("/api/clipboard/"):
             cid = path[len("/api/clipboard/"):]
             if cid:
@@ -779,6 +798,86 @@ class FileHandler(BaseHTTPRequestHandler):
                     pass
 
     # ---- 共享剪切板 API ----
+
+    def _proxy_clipboard(self, path):
+        """入口节点只访问主服务，失败时不写入本地剪切板。"""
+        if not CLIPBOARD_PRIMARY_URL or not (
+                path == "/api/clipboard" or path.startswith("/api/clipboard/")):
+            return False
+        if path == "/api/clipboard/backup":
+            self._send_json({"error": "备份请直接访问主服务"}, 403)
+            return True
+        if self.headers.get("Transfer-Encoding"):
+            self._send_json({"error": "不支持分块请求体"}, 400)
+            return True
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._send_json({"error": "无效 Content-Length"}, 400)
+            return True
+        limit = (CLIPBOARD_MAX_IMAGE + 16384 if path == "/api/clipboard/image"
+                 else CLIPBOARD_MAX_TEXT * 6 + 16384)
+        if length < 0 or length > limit:
+            self._send_json({"error": "剪切板请求体超过上限"}, 413)
+            return True
+        started = False
+        try:
+            body = self.rfile.read(length) if length else None
+            if length and len(body) != length:
+                self._send_json({"error": "请求体不完整"}, 400)
+                return True
+            headers = {}
+            if self.headers.get("Content-Type"):
+                headers["Content-Type"] = self.headers["Content-Type"]
+            request = urllib.request.Request(CLIPBOARD_PRIMARY_URL + self.path,
+                                             data=body, headers=headers, method=self.command)
+            # 不重试写请求，避免响应丢失时重复发布。
+            try:
+                response = urllib.request.urlopen(request, timeout=10)
+            except urllib.error.HTTPError as error:
+                response = error
+            with response:
+                self.send_response(response.code)
+                for name in ("Content-Type", "Content-Length"):
+                    if response.headers.get(name):
+                        self.send_header(name, response.headers[name])
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                started = True
+                shutil.copyfileobj(response, self.wfile, CHUNK_SIZE)
+        except (OSError, urllib.error.URLError):
+            if started:
+                self.close_connection = True
+            else:
+                self._send_json({"error": "NAS 剪切板主服务暂时不可用，请稍后重试"}, 503)
+        return True
+
+    def _api_clipboard_backup(self):
+        """在同一把锁内打包元数据和图片，生成一致的备份。"""
+        token = self.headers.get("Authorization", "")
+        if (CLIPBOARD_PRIMARY_URL or not CLIPBOARD_BACKUP_TOKEN or
+                not hmac.compare_digest(token.encode(),
+                                        ("Bearer " + CLIPBOARD_BACKUP_TOKEN).encode())):
+            self._send_json({"error": "备份访问未授权"}, 403)
+            return
+        with tempfile.TemporaryFile(dir=DATA_DIR) as snapshot:
+            with clipboard_lock:
+                entries = _load_clipboard()
+                with zipfile.ZipFile(snapshot, "w", zipfile.ZIP_STORED) as archive:
+                    archive.writestr("clipboard.json", json.dumps(entries, ensure_ascii=False))
+                    for entry in entries:
+                        if entry.get("type") == "image":
+                            name = entry["id"] + _ext_from_mime(entry.get("mime"))
+                            archive.write(os.path.join(CLIPBOARD_FILES_DIR, name),
+                                          "clipboard_files/" + name)
+            size = snapshot.tell()
+            snapshot.seek(0)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            shutil.copyfileobj(snapshot, self.wfile, CHUNK_SIZE)
 
     def _api_clipboard_list(self, query):
         """列出剪贴板条目。query 可带 q=<关键词> 做服务端过滤（仅匹配文字条目）。"""

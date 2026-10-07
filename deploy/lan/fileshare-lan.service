@@ -1,0 +1,26 @@
+[Unit]
+Description=LAN file sharing and primary clipboard
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=@DATA_ROOT@
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@APP_DIR@
+ExecStart=/usr/bin/python3 @APP_DIR@/http_server.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Asia/Shanghai
+MemoryHigh=192M
+MemoryMax=256M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=@DATA_ROOT@
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

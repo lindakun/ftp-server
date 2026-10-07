@@ -25,6 +25,7 @@ Thumbs.db
 
 # Data（剪贴板内容与上传中转，属运行时数据，不入库）
 data/
+server.env
 shared/*
 
 # 本地工作记忆与工具数据（含内网/服务器信息，不入库）

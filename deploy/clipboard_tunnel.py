@@ -28,7 +28,7 @@ def install(args):
                         '-C', 'fileshare-' + args.node], check=True)
     if os.name == 'nt':
         # 隧道任务由 SYSTEM 运行，私钥也必须归 SYSTEM 所有且仅该账户可读。
-        subprocess.run(['icacls', str(key), '/setowner', '*S-1-5-32-544'],
+        subprocess.run(['takeown', '/f', str(key), '/a'],
                        check=True, stdout=subprocess.DEVNULL)
         subprocess.run(['icacls', str(key), '/reset'], check=True, stdout=subprocess.DEVNULL)
         subprocess.run(['icacls', str(key), '/inheritance:r', '/grant:r', '*S-1-5-18:F'],

@@ -20,6 +20,19 @@ def install(args):
     root = args.directory.resolve()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.name == 'nt':
+        # 结束任务时 SSH 子进程可能残留；重装前只清理使用本节点配置或密钥的进程树。
+        config_path = str(root / 'tunnel.json').replace("'", "''")
+        key_path = str(root / 'id_ed25519').replace("'", "''")
+        cleanup = (
+            f"$config='{config_path}'; $key='{key_path}'; "
+            "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and "
+            "($_.Name -in @('python.exe','pythonw.exe','ssh.exe')) -and "
+            "($_.CommandLine.Contains($config) -or "
+            "($_.Name -eq 'ssh.exe' -and $_.CommandLine.Contains($key))) } | "
+            "ForEach-Object { if (Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue) { "
+            "& taskkill.exe /PID $_.ProcessId /T /F | Out-Null } }"
+        )
+        subprocess.run(['powershell.exe', '-NoProfile', '-Command', cleanup], check=True)
         subprocess.run(['icacls', str(root), '/inheritance:r', '/grant:r',
                         '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F'], check=True, stdout=subprocess.DEVNULL)
     key = root / 'id_ed25519'

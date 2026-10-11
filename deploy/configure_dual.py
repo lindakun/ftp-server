@@ -20,8 +20,11 @@ def main():
     parser.add_argument('--peer', help='兼容旧双节点配置的对端 URL')
     parser.add_argument('--peers', help='对端节点名与 URL 的 JSON 映射')
     parser.add_argument('--config', type=Path, default=Path(os.environ.get('FILESHARE_CONFIG') or BASE / 'server.env'))
+    parser.add_argument('--http-port', type=int, help='同时调整本机 HTTP 监听端口')
     parser.add_argument('--rekey-legacy', action='store_true', help='为独立单机数据分配新 ID，保留与集群内容相同的记录；需先停止服务')
     args = parser.parse_args()
+    if args.http_port is not None and not 1 <= args.http_port <= 65535:
+        parser.error('HTTP 端口必须在 1 到 65535 之间')
     config = args.config
     values = dict(line.split('=', 1) for line in config.read_text(encoding='utf-8').splitlines()
                   if line.strip() and not line.lstrip().startswith('#'))
@@ -63,6 +66,8 @@ def main():
                   CLIPBOARD_PEERS=json.dumps(peers, separators=(',', ':')) if args.peers else '',
                   CLIPBOARD_SYNC_TOKEN=token)
     values['CLIPBOARD_BACKUP_TOKEN'] = values.get('CLIPBOARD_BACKUP_TOKEN') or secrets.token_urlsafe(32)
+    if args.http_port is not None:
+        values['HTTP_PORT'] = str(args.http_port)
     # 原位写入保留 NAS 文件所有者和 Windows 的私密 ACL。
     config.write_text(''.join(f'{key}={value}\n' for key, value in values.items()), encoding='utf-8')
     print('剪切板多活配置完成：' + args.node)

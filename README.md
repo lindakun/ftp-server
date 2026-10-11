@@ -317,6 +317,7 @@ python3 deploy/configure_dual.py --node cloud --config /etc/fileshare/env \
 
 可用 `--http-port` 同时调整本机监听端口。Windows 应避开系统保留端口范围；
 改端口时，其他节点的对端地址和隧道的 `--local-port` 也需一起更新。
+配置脚本在 Windows 调整端口时会为该端口创建仅允许本地子网访问的防火墙规则。
 
 独立单机节点加入已有集群时，先停止服务并保存包含 JSON 和图片的完整备份，
 可以加 `--rekey-legacy` 为它的已有记录分配新 ID。这样两边已有内容全部保留，

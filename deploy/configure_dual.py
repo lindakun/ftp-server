@@ -68,6 +68,14 @@ def main():
     values['CLIPBOARD_BACKUP_TOKEN'] = values.get('CLIPBOARD_BACKUP_TOKEN') or secrets.token_urlsafe(32)
     if args.http_port is not None:
         values['HTTP_PORT'] = str(args.http_port)
+        if os.name == 'nt':
+            # 新端口仅允许本地子网访问，保持局域网服务的访问范围。
+            rule = f'FileShareWeb-HTTP-{args.http_port}'
+            command = (f"if (-not (Get-NetFirewallRule -Name '{rule}' -ErrorAction SilentlyContinue)) {{ "
+                       f"New-NetFirewallRule -Name '{rule}' -DisplayName '{rule}' -Direction Inbound "
+                       f"-Action Allow -Protocol TCP -LocalPort {args.http_port} -Profile Any "
+                       "-RemoteAddress LocalSubnet | Out-Null }")
+            subprocess.run(['powershell.exe', '-NoProfile', '-Command', command], check=True)
     # 原位写入保留 NAS 文件所有者和 Windows 的私密 ACL。
     config.write_text(''.join(f'{key}={value}\n' for key, value in values.items()), encoding='utf-8')
     print('剪切板多活配置完成：' + args.node)

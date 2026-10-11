@@ -26,6 +26,13 @@ def install(args):
     if not key.exists():
         subprocess.run([executable('ssh-keygen'), '-q', '-t', 'ed25519', '-N', '', '-f', str(key),
                         '-C', 'fileshare-' + args.node], check=True)
+    if os.name == 'nt':
+        # 隧道任务由 SYSTEM 运行，私钥也必须归 SYSTEM 所有且仅该账户可读。
+        subprocess.run(['icacls', str(key), '/reset'], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(['icacls', str(key), '/inheritance:r', '/grant:r', '*S-1-5-18:F'],
+                       check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(['icacls', str(key), '/setowner', '*S-1-5-18'],
+                       check=True, stdout=subprocess.DEVNULL)
     hosts = root / 'known_hosts'
     hosts.write_text(args.known_host.strip() + '\n', encoding='utf-8')
     config = root / 'tunnel.json'

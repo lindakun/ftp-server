@@ -1,0 +1,17 @@
+[Unit]
+Description=Consistent cloud clipboard backup
+Requires=fileshare.service
+After=fileshare.service
+
+[Service]
+Type=oneshot
+User=fileshare
+WorkingDirectory=/opt/fileshare
+EnvironmentFile=/etc/fileshare/env
+ExecStart=/usr/bin/python3 /opt/fileshare/clipboard_backup.py --output /var/lib/fileshare/backups --keep 14
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/fileshare/backups
+UMask=0077

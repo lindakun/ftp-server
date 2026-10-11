@@ -20,30 +20,32 @@ import threading
 from clipboard_sync import ClipboardStore, ClipboardSync, rank
 
 
-class DualClipboardTest(unittest.TestCase):
+class ClipboardProcessTest(unittest.TestCase):
+    nodes = ('a', 'b')
     def setUp(self):
         self.root = tempfile.TemporaryDirectory()
         self.addCleanup(self.root.cleanup)
         self.token = 'test-dual-token'
         self.processes, self.envs, self.urls = {}, {}, {}
-        sockets = [socket.socket(), socket.socket()]
-        for name, sock in zip(('a', 'b'), sockets):
+        sockets = [socket.socket() for _ in self.nodes]
+        for name, sock in zip(self.nodes, sockets):
             sock.bind(('127.0.0.1', 0))
             self.urls[name] = 'http://127.0.0.1:' + str(sock.getsockname()[1])
         for sock in sockets:
             sock.close()
-        for name in ('a', 'b'):
+        for name in self.nodes:
             root = Path(self.root.name) / name
             self.envs[name] = dict(os.environ, HTTP_HOST='127.0.0.1',
                 HTTP_PORT=self.urls[name].rsplit(':', 1)[1], DATA_DIR=str(root / 'data'),
                 SHARE_DIR=str(root / 'shared'), FILESHARE_CONFIG=str(root / 'none.env'),
                 CLIPBOARD_PRIMARY_URL='', CLIPBOARD_NODE_ID=name,
-                CLIPBOARD_PEER_URL=self.urls['b' if name == 'a' else 'a'],
+                CLIPBOARD_PEER_URL=self.urls[next(peer for peer in self.nodes if peer != name)],
+                CLIPBOARD_PEERS=json.dumps({peer: url for peer, url in self.urls.items() if peer != name}) if len(self.nodes) > 2 else '',
                 CLIPBOARD_SYNC_TOKEN=self.token, CLIPBOARD_BACKUP_TOKEN=self.token,
                 HTTP_PROXY='http://127.0.0.1:1', NO_PROXY='')
         self.addCleanup(self.stop_all)
-        self.start('a')
-        self.start('b')
+        for name in self.nodes:
+            self.start(name)
 
     def stop_all(self):
         for name in list(self.processes):
@@ -60,13 +62,14 @@ class DualClipboardTest(unittest.TestCase):
             process.terminate()
             process.wait(timeout=5)
 
-    def call(self, name, path='/api/clipboard', method='GET', data=None, auth=False):
+    def call(self, name, path='/api/clipboard', method='GET', data=None, auth=False, sender=None):
         headers = {}
         if isinstance(data, dict):
             data = json.dumps(data).encode()
             headers['Content-Type'] = 'application/json'
         if auth:
             headers['Authorization'] = 'Bearer ' + self.token
+            headers['X-Clipboard-Node'] = sender or next(peer for peer in self.nodes if peer != name)
         request = urllib.request.Request(self.urls[name] + path, method=method, data=data, headers=headers)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
@@ -80,7 +83,7 @@ class DualClipboardTest(unittest.TestCase):
         return json.loads(self.call(name)[1])['items']
 
     def wait(self, predicate):
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             try:
                 if predicate():
@@ -96,11 +99,14 @@ class DualClipboardTest(unittest.TestCase):
         return json.loads(body)['entry']['id']
 
     def settled(self, ids):
-        for name in ('a', 'b'):
+        for name in self.nodes:
             items = self.items(name)
             if {e['id'] for e in items} != ids or not all(e['synced'] for e in items):
                 return False
         return True
+
+
+class DualClipboardTest(ClipboardProcessTest):
 
     def test_offline_write_images_and_rejoin(self):
         self.stop('b')

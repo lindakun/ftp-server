@@ -289,6 +289,60 @@ ssh -N -L 18080:127.0.0.1:18080 myserver
 
 ---
 
+## 三个或更多剪切板节点
+
+每台独立保存剪切板文字、图片与删除标记，可以离线读写；普通共享文件仍各自独立。
+节点使用唯一 `CLIPBOARD_NODE_ID`、同一专用同步密钥，以及相同的条数和图片大小限制。
+对端通过 `CLIPBOARD_PEERS` 配置为节点名到 HTTP 根地址的 JSON 映射：
+
+```ini
+CLIPBOARD_NODE_ID=nas
+CLIPBOARD_PEERS={"pc":"http://<PC_IP>:8080","cloud":"http://127.0.0.1:18081"}
+```
+
+三节点建议两两互通，避免一台故障阻断另外两台的同步。每个对端有独立的同步任务，
+失败不会阻塞其他对端。活跃时快速同步，空闲时轮询间隔最多 10 秒，失败退避最多
+15 秒；每轮仍分页进行完整对账，包括永久删除标记。节点恢复后自动补齐。
+页面显示各对端状态和每条记录「已确认保存 2/3 台」等副本数量；刚写入时仅有本机
+副本，异步同步完成前不能保证抵御本机磁盘故障。同步会传播删除，定时备份仍应保留。
+
+旧 `CLIPBOARD_PEER_URL` 配置继续支持双节点运行。升级时先备份、提交并推送代码，
+各台通过 Git Pull 更新，再配置对端并重启；不要混用新多节点协议和旧版服务。
+
+```bash
+# 同步密钥通过环境变量传入；已有配置时可复用其中的密钥。
+python3 deploy/configure_dual.py --node cloud --config /etc/fileshare/env \
+  --peers '{"nas":"http://127.0.0.1:19088","pc":"http://127.0.0.1:19093"}'
+```
+
+独立单机节点加入已有集群时，先停止服务并保存包含 JSON 和图片的完整备份，
+可以加 `--rekey-legacy` 为它的已有记录分配新 ID。这样两边已有内容全部保留，
+相同内容也不会去重，原 ID 冲突不会覆盖另一份。该选项只允许尚未建立同步数据库
+的单机节点使用，不能用于已有多活节点的恢复。恢复多活数据必须保留 SQLite 中
+的版本和删除标记，不能仅导入可见条目的 JSON。
+
+局域网节点连接云端时，各自建立一条常驻 SSH 连接，同时使用正向和反向转发。
+云端服务及所有转发端口只绑定回环地址。`deploy/clipboard_tunnel.py --install`
+生成独立隧道密钥、运行配置，以及 Linux systemd 单元或 Windows 启动任务；
+安装参数包括 `--directory`、`--node`、`--cloud`、`--reverse-port`、`--known-host`，
+Linux 还需 `--user`。`--known-host` 必须来自可信连接核实的云端主机公钥。
+正向端口默认 18081，云端服务端口默认 18080；NAS 服务若绑定局域网地址，使用
+`--local-host <NAS_IP>` 指定反向转发的本机目标。
+
+安装后先在云端授权生成的公钥，再启动 `fileshare-clipboard-tunnel.service` 或
+Windows `FileShareClipboardTunnel` 任务。公钥建议限制为仅允许访问云服务端口
+和本节点的反向端口，禁止终端、命令、代理和 X11 转发。隧道自动重连，独立于
+日常运维 SSH 登录。云端定时备份使用 `deploy/fileshare-backup.service` 和
+`deploy/fileshare-backup.timer`，目录 `/var/lib/fileshare/backups` 需归 `fileshare`
+所有；每天北京时间 03:20 后执行，保留 14 份。
+
+验证多节点行为：
+
+```bash
+python3 -m unittest test_clipboard_dual test_clipboard_multi test_clipboard_primary \
+  test_upload_integrity test_upload_permissions -v
+```
+
 ## 文件说明
 
 ```
@@ -331,6 +385,7 @@ logs/                  后台运行日志目录（自动生成）
 | `FILESHARE_CONFIG` | `<脚本目录>/server.env` | 本地运行配置文件路径 |
 | `CLIPBOARD_NODE_ID` | 空 | 双活节点唯一名称；为空时保持原有单机或转发模式 |
 | `CLIPBOARD_PEER_URL` | 空 | 剪切板双活对端地址 |
+| `CLIPBOARD_PEERS` | 空 | 多节点对端映射 JSON；设置时优先于旧单对端配置 |
 | `CLIPBOARD_SYNC_TOKEN` | 空 | 两台共同使用的专用同步密钥 |
 | `TZ` | 系统时区 | 设 `Asia/Shanghai` 让剪切板时间显示正确 |
 

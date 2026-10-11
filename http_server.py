@@ -28,7 +28,7 @@ import urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from server_config import load_config
-from clipboard_sync import ClipboardStore, ClipboardSync
+from clipboard_sync import ClipboardStore, ClipboardCluster, peer_config
 
 load_config()
 
@@ -66,6 +66,7 @@ CLIPBOARD_PRIMARY_URL = os.environ.get("CLIPBOARD_PRIMARY_URL", "").rstrip("/")
 CLIPBOARD_BACKUP_TOKEN = os.environ.get("CLIPBOARD_BACKUP_TOKEN", "")
 CLIPBOARD_NODE_ID = os.environ.get("CLIPBOARD_NODE_ID", "")
 CLIPBOARD_PEER_URL = os.environ.get("CLIPBOARD_PEER_URL", "")
+CLIPBOARD_PEERS = os.environ.get("CLIPBOARD_PEERS", "")
 CLIPBOARD_SYNC_TOKEN = os.environ.get("CLIPBOARD_SYNC_TOKEN", "")
 clipboard_store = None
 clipboard_sync = None
@@ -825,13 +826,17 @@ class FileHandler(BaseHTTPRequestHandler):
         if not hmac.compare_digest(self.headers.get("Authorization", "").encode(), expected):
             self._send_json({"error": "同步访问未授权"}, 403)
             return
+        sender = clipboard_sync.sender(self.headers.get("X-Clipboard-Node", ""))
+        if sender is None:
+            self._send_json({"error": "未知同步节点"}, 403)
+            return
         try:
             if self.command == "GET" and parsed.path.startswith("/api/clipboard/sync/file/"):
                 self._api_clipboard_file(parsed.path.rsplit("/", 1)[1])
                 return
             if self.command == "GET":
                 cursor = urllib.parse.parse_qs(parsed.query).get("after", [""])[0]
-                self._send_json({"records": clipboard_store.page(cursor)})
+                self._send_json({"node": CLIPBOARD_NODE_ID, "records": clipboard_store.page(cursor)})
                 return
             length = int(self.headers.get("Content-Length", "0"))
             if self.headers.get("Transfer-Encoding") or not 0 < length <= 16 * 1024 * 1024:
@@ -839,8 +844,8 @@ class FileHandler(BaseHTTPRequestHandler):
                 return
             data = self._read_json_body()
             if data is not None:
-                records = clipboard_sync.receive(data["records"])
-                self._send_json({"records": records})
+                records = sender.receive(data["records"])
+                self._send_json({"node": CLIPBOARD_NODE_ID, "records": records})
         except (ValueError, KeyError, TypeError):
             self._send_json({"error": "无效同步数据"}, 400)
         except OSError:
@@ -943,7 +948,7 @@ class FileHandler(BaseHTTPRequestHandler):
                        if e.get("type") == "text" and q in (e.get("text") or "").lower()]
         data = {"items": list(reversed(entries))}
         if clipboard_store:
-            data["sync"] = {"node": CLIPBOARD_NODE_ID, "peer_online": clipboard_store.connected}
+            data["sync"] = clipboard_store.sync_status()
         self._send_json(data)
 
     def _api_clipboard_edit(self):
@@ -1160,13 +1165,15 @@ def main():
     if CLIPBOARD_NODE_ID:
         if CLIPBOARD_PRIMARY_URL:
             raise ValueError("双活节点不能同时配置主服务转发")
+        peers = peer_config(CLIPBOARD_NODE_ID, json.loads(CLIPBOARD_PEERS) if CLIPBOARD_PEERS else None,
+                            CLIPBOARD_PEER_URL)
         clipboard_store = ClipboardStore(DATA_DIR, CLIPBOARD_NODE_ID, CLIPBOARD_MAX_ENTRIES, _ext_from_mime)
-        clipboard_sync = ClipboardSync(clipboard_store, CLIPBOARD_PEER_URL, CLIPBOARD_SYNC_TOKEN,
-                                       clipboard_lock, CLIPBOARD_MAX_IMAGE)
+        clipboard_sync = ClipboardCluster(clipboard_store, peers, CLIPBOARD_SYNC_TOKEN,
+                                          clipboard_lock, CLIPBOARD_MAX_IMAGE, legacy=not CLIPBOARD_PEERS)
 
     server = ThreadingHTTPServer((HOST, PORT), FileHandler)
     if clipboard_sync:
-        threading.Thread(target=clipboard_sync.run, daemon=True).start()
+        clipboard_sync.start()
 
     ip = get_local_ip()
     loopback_only = HOST in ("127.0.0.1", "localhost", "::1")

@@ -111,15 +111,20 @@ Python 标准库 SQLite 事务提交后才返回本机保存成功。首次启�
 ```bash
 # NAS：CLIPBOARD_SYNC_TOKEN 从环境传入，不放进命令参数或 Git。
 sudo --preserve-env=CLIPBOARD_SYNC_TOKEN python3 /opt/fileshare-lan/deploy/configure_dual.py \
-  --node nas188 --peer http://192.168.31.193:8080
+  --node <本节点名> --peer http://<Windows_IP>:<Windows_端口>
 sudo systemctl restart fileshare-lan
 ```
 
 ```powershell
 # Windows：先配置再启动既有 FileShareWeb 任务。
-.venv\Scripts\python.exe deploy\configure_dual.py --node win193 --peer http://192.168.31.188:8080
+.venv\Scripts\python.exe deploy\configure_dual.py --node <本节点名> --peer http://<NAS_IP>:<NAS_端口>
 Start-ScheduledTask -TaskName FileShareWeb
 ```
+
+> **端口以各节点实际配置为准**，不要假设两边都是 8080。Windows 入口若与同机
+> 其他服务冲突，可以改成 18082 这类端口；此时 `--peer` 里也必须带对端真实端口。
+> 改完用 `netstat -ano | findstr LISTENING`（Windows）或 `ss -tlnp`（Linux/NAS）
+> 确认监听地址，再填进对端的 `--peer`。
 
 脚本保留已有端口、共享目录和备份配置，清除旧的主服务转发配置，并另存切换前
 配置。同步接口使用专用 Bearer 密钥，密钥保存在不入 Git 的私密 `server.env` 中。
@@ -156,14 +161,14 @@ python3 -m unittest test_clipboard_dual test_clipboard_primary test_upload_integ
 ```bash
 # NAS：数据目录应位于持久化数据盘；user 为可访问该目录的现有用户。
 sudo --preserve-env=CLIPBOARD_BACKUP_TOKEN python3 /opt/fileshare-lan/deploy/install_lan.py \
-  primary --host 192.168.31.188 --port 8080 \
-  --user lindakun --data-root /vol1/1000/2_工作资料/ftp-server
+  primary --host <NAS_IP> --port <NAS_端口> \
+  --user <有数据目录读写权限的用户> --data-root <持久化数据盘上的路径>
 ```
 
 ```powershell
 # Windows：在项目目录使用项目的 Python 安装入口配置及备份任务。
-.venv\Scripts\python.exe deploy\install_lan.py gateway --host 0.0.0.0 --port 8080 `
-  --primary-url http://192.168.31.188:8080
+.venv\Scripts\python.exe deploy\install_lan.py gateway --host 0.0.0.0 --port <入口端口> `
+  --primary-url http://<NAS_IP>:<NAS_端口>
 # 停止现有 FileShareWeb 进程后重新运行任务，让配置生效。
 ```
 
@@ -182,7 +187,7 @@ NAS 备份目录为 `<data-root>/backups`，Windows 为 `<项目目录>/data/bac
 应立即执行一次备份，确认两台都能生成 ZIP。也可手动运行：
 
 ```bash
-python3 clipboard_backup.py --url http://192.168.31.188:8080 --output /path/to/backups --keep 14
+python3 clipboard_backup.py --url http://<NAS_IP>:<NAS_端口> --output /path/to/backups --keep 14
 ```
 
 恢复时先停止主服务，将选定备份中的 `clipboard.json` 和 `clipboard_files/` 解压
@@ -255,6 +260,77 @@ sudo systemctl disable --now fileshare    # 卸载（含取消开机自启）
 
 ```bash
 sudo bash /opt/fileshare/deploy/install_remote.sh   # 内部会 git pull 并重启
+```
+
+### 多节点更新（各节点方式不同）
+
+不同节点的**代码路径、服务名、端口、运行身份都可能不一样**，更新前先确认，
+不要照抄某台的命令到另一台。三种常见形态：
+
+```bash
+# ① systemd 节点（install_remote.sh 装的）
+sudo bash /opt/fileshare/deploy/install_remote.sh
+
+# ② 已有 git 仓库 + systemd，但脚本不适用
+git -C <代码目录> pull --ff-only
+sudo systemctl restart <服务名>
+
+# ③ Windows 计划任务（SYSTEM 身份 + pythonw.exe）
+git -C <代码目录> pull --ff-only
+schtasks /end /tn FileShareWeb
+schtasks /run /tn FileShareWeb
+```
+
+确认某台的实际运行方式：
+
+```bash
+# Linux / NAS
+systemctl show <服务名> -p User -p ExecStart
+ss -tlnp | grep <端口>
+
+# Windows
+schtasks /query /tn FileShareWeb /fo LIST /v
+netstat -ano | findstr LISTENING | findstr <端口>
+```
+
+**仓库属主与更新权限**：代码目录应归**执行 `git pull` 的那个用户**所有。
+若目录属 `root`、而日常登录用户不是 root，`git pull` 会报
+`dubious ownership` 或 `Permission denied`。一次性修正：
+
+```bash
+sudo chown -R <登录用户>:<其主组> <代码目录>
+git -C <代码目录> config --global --add safe.directory <代码目录>
+```
+
+服务单元里的 `User=` 应指向同一用户或具备只读执行权限的用户，避免改了属主后
+服务起不来。
+
+### 部署后验证
+
+代码更新不等于生效，至少确认三件事：
+
+```bash
+# 1. 版本一致（逐台）
+git -C <代码目录> log --oneline -1
+
+# 2. 服务在跑，且端口确实在监听
+systemctl is-active <服务名>
+ss -tlnp | grep <端口>
+
+# 3. 真实请求能通（注意用该节点实际绑定的地址）
+curl -s -o /dev/null -w "%{http_code}\n" http://<绑定地址>:<端口>/
+```
+
+⚠️ **绑定地址不等于回环地址**：某些节点绑的是局域网 IP，此时
+`curl 127.0.0.1:<端口>` 会失败（返回 000），但这不代表服务异常。
+先看 `ss -tlnp` 的实际绑定地址再探测。
+
+云端节点还应验证公网不可达，并且**要有对照组**（同时探测一个已知开放的端口，
+对照组通、目标端口不通，才能证明是隔离生效而非网络本身有问题）：
+
+```bash
+curl -s -o /dev/null -m 8 -w "control=%{http_code}\n" http://<公网IP>/
+curl -s -o /dev/null -m 8 -w "target=%{http_code}\n"  http://<公网IP>:<服务端口>/
 ```
 
 ### 本机 SSH 隧道

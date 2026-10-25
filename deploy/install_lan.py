@@ -10,6 +10,30 @@ BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
 
+def chown_tree(root, uid, gid, quiet=False):
+    """递归把代码目录的属主改给指定用户，返回实际改动项数。
+
+    安装脚本通常用 sudo 运行，若代码目录由 root 创建，之后日常用户执行
+    `git pull` 会报 dubious ownership 或 Permission denied。这里统一归还属主。
+    不跟随符号链接（用 lchown），避免误改仓库外的目标。
+    """
+    entries = [Path(root)]
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in dirnames + filenames:
+            entries.append(Path(dirpath) / name)
+    changed = 0
+    for path in entries:
+        try:
+            st = path.lstat()
+            if st.st_uid != uid or st.st_gid != gid:
+                os.lchown(path, uid, gid)
+                changed += 1
+        except OSError as exc:
+            if not quiet:
+                print(f"    [警告] 无法修改属主 {path}: {exc}")
+    return changed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("role", choices=["primary", "gateway"])
@@ -18,6 +42,8 @@ def main():
     parser.add_argument("--data-root", type=Path)
     parser.add_argument("--user")
     parser.add_argument("--primary-url")
+    parser.add_argument("--keep-owner", action="store_true",
+                        help="不改代码目录属主（默认会归还给 --user，便于日常 git pull）")
     args = parser.parse_args()
     token = os.environ.get("CLIPBOARD_BACKUP_TOKEN", "")
     if not token:
@@ -35,6 +61,11 @@ def main():
             path.mkdir(parents=True, exist_ok=True)
             os.chown(path, account.pw_uid, account.pw_gid)
             path.chmod(0o700)
+        # 代码目录归还给运行/维护用户：否则 root 安装后该用户无法 git pull。
+        # 服务以 --user 身份运行，属主一致也不会影响读取。
+        if not args.keep_owner:
+            moved = chown_tree(BASE, account.pw_uid, account.pw_gid)
+            print(f"    代码目录属主已设为 {args.user}（更新 {moved} 项）")
         values = {"HTTP_HOST": args.host, "HTTP_PORT": str(args.port),
                   "SHARE_DIR": str(args.data_root / "shared"),
                   "DATA_DIR": str(args.data_root / "data"), "TZ": "Asia/Shanghai"}

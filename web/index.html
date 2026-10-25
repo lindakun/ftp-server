@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>局域网文件共享</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%81%3C/text%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #f5f7fa;
@@ -207,23 +208,34 @@
   .progress .fill { height: 100%; background: var(--primary); transition: width .3s; }
 
   /* 提示 */
-  .toast {
+  .toast-stack {
     position: fixed;
-    top: 20px;
+    bottom: 24px;
     left: 50%;
     transform: translateX(-50%);
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    width: max-content;
+    max-width: calc(100vw - 32px);
+    pointer-events: none;
+  }
+  .toast {
     background: var(--text);
     color: #fff;
     padding: 10px 20px;
     border-radius: 6px;
     font-size: 14px;
     box-shadow: var(--shadow);
-    z-index: 9999;
     opacity: 0;
-    transition: opacity .3s;
-    pointer-events: none;
+    transform: translateY(6px);
+    transition: opacity .25s, transform .25s;
+    max-width: 100%;
+    word-break: break-word;
   }
-  .toast.show { opacity: 1; }
+  .toast.show { opacity: 1; transform: translateY(0); }
   .toast.error { background: var(--danger); }
   .toast.success { background: var(--success); }
 
@@ -319,12 +331,116 @@
   }
   .clip-edited { color: var(--primary); font-weight: 500; }
 
+  /* 行操作菜单 */
+  .row-menu {
+    position: fixed;
+    z-index: 10000;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.14);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    min-width: 156px;
+  }
+  .row-menu[hidden] { display: none; }
+  .row-menu button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 9px 12px;
+    border: none;
+    background: none;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 14px;
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+  }
+  .row-menu button:hover { background: #f5f7fa; }
+  .row-menu button.danger { color: var(--danger); }
+  .row-menu button[hidden] { display: none; }
+
+  /* 可恢复的错误态 */
+  .empty.error-state { color: var(--text-2); }
+  .empty.error-state .btn { margin-top: 14px; }
+
+  /* 骨架屏 */
+  .skeleton-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .skeleton-row:last-child { border-bottom: none; }
+  .skeleton-bar {
+    height: 12px;
+    border-radius: 6px;
+    background: linear-gradient(90deg, #eef1f5 25%, #f7f9fc 50%, #eef1f5 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.2s infinite;
+  }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+
+  /* 上传结果 / 失败清单 */
+  .upload-result {
+    background: var(--card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 14px 20px;
+    margin-bottom: 16px;
+    font-size: 13px;
+  }
+  .upload-result[hidden] { display: none; }
+  .upload-result .ur-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .upload-result .ur-title { font-weight: 600; color: var(--text); }
+  .upload-result ul { margin: 6px 0 0 18px; color: var(--text-2); max-height: 160px; overflow: auto; word-break: break-all; }
+  .upload-result li { line-height: 1.7; }
+  .upload-result .ur-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
+  .btn:focus-visible, .tab:focus-visible, .row-menu button:focus-visible,
+  input:focus-visible, textarea:focus-visible, a:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+  .btn:disabled { opacity: .55; cursor: not-allowed; }
+
   @media (max-width: 600px) {
+    .container { padding: 12px; }
+    .header { padding: 14px 16px; }
+    .header-top { align-items: flex-start; }
+    .title { font-size: 18px; }
+    .tabs { width: 100%; }
+    .tab { flex: 1; padding: 9px 10px; }
+    .toolbar .btn { flex: 1 1 auto; justify-content: center; }
+    .upload-target .ut-path { max-width: 100%; }
+
+    /* 文件行改为两行，避免文件名被操作按钮挤成几个字 */
+    .file-header { display: none; }
+    .file-item { flex-wrap: wrap; padding: 12px 14px; gap: 4px 10px; }
+    .file-check { order: 1; }
+    .file-icon { order: 2; font-size: 18px; }
+    .file-name { order: 3; flex: 1 1 auto; min-width: 0; font-size: 15px; }
+    .file-ops { order: 4; width: auto; }
+    .file-size { order: 5; width: 100%; text-align: left; padding-left: 54px; font-size: 12px; }
     .file-time { display: none; }
-    .file-size { width: 60px; }
+    /* 目录没有大小，移动端不必占一整行 */
+    .file-item[data-isdir="1"] .file-size { display: none; }
+
+    /* 触摸目标不小于 40px */
+    .btn-sm { min-height: 40px; min-width: 40px; justify-content: center; }
+    .file-ops .btn-sm { min-width: 40px; }
+
     .clip-compose .row { gap: 8px; }
-    .clip-search { width: 100%; flex: 1; }
+    .clip-compose .row .btn { flex: 1 1 auto; justify-content: center; }
+    .clip-search { width: 100%; flex: 1 1 100%; }
     .clip-toolbar-right { width: 100%; }
+    .clip-item .meta { flex-wrap: wrap; }
+    .batch-bar { flex-wrap: wrap; }
   }
 </style>
 </head>
@@ -365,8 +481,12 @@
       <div class="row">
         <span id="uploadText">上传中...</span>
         <div class="progress"><div class="fill" id="progressFill" style="width:0%"></div></div>
+        <button class="btn btn-ghost btn-sm" id="uploadCancel" onclick="cancelUpload()">取消</button>
       </div>
     </div>
+
+    <!-- 上传结果（失败清单可展开） -->
+    <div class="upload-result" id="uploadResult" hidden></div>
 
     <!-- 批量操作栏 -->
     <div class="batch-bar" id="batchBar">
@@ -400,20 +520,24 @@
     <div class="toolbar" style="justify-content:space-between">
       <span class="clip-section-title">📋 共享内容</span>
       <div class="clip-toolbar-right" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <input type="search" id="clipSearch" class="clip-search" placeholder="🔍 搜索共享内容..." oninput="filterClipboard()">
+        <input type="search" id="clipSearch" class="clip-search" placeholder="🔍 搜索共享内容（仅文字）" aria-label="搜索共享内容">
         <button class="btn btn-ghost btn-sm" onclick="loadClipboard()">🔄 刷新</button>
         <button class="btn btn-danger btn-sm" onclick="clearClip()">🧹 清空全部</button>
       </div>
     </div>
 
     <div class="clip-hint" id="clipSyncStatus" role="status"></div>
+    <div class="clip-hint" id="clipSearchSummary"></div>
     <div class="clip-list" id="clipList">
       <div class="empty"><div class="big-icon">📋</div>还没有共享内容，发布一条试试～</div>
     </div>
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="false"></div>
+
+<!-- 行操作菜单 -->
+<div class="row-menu" id="rowMenu" hidden></div>
 
 <script>
 let currentPath = '';
@@ -424,11 +548,31 @@ let allClipItems = [];     // 全部剪贴板条目缓存（搜索过滤用）
 let editingClipId = null;  // 正在行内编辑的条目 id
 
 // ---- 工具函数 ----
+// 多条提示按顺序排队展示，避免上传结束时的「成功/超限/失败」互相覆盖
+const toastQueue = [];
+let toastRunning = false;
+
 function toast(msg, type) {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.className = 'toast show ' + (type || '');
-  setTimeout(() => el.className = 'toast', 2500);
+  toastQueue.push({ msg, type: type || '' });
+  if (!toastRunning) runToastQueue();
+}
+
+async function runToastQueue() {
+  toastRunning = true;
+  const stack = document.getElementById('toastStack');
+  while (toastQueue.length) {
+    const { msg, type } = toastQueue.shift();
+    const el = document.createElement('div');
+    el.className = 'toast ' + type;
+    el.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    el.textContent = msg;
+    stack.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('show'));
+    await new Promise(r => setTimeout(r, 2600));
+    el.classList.remove('show');
+    setTimeout(() => el.remove(), 300);
+  }
+  toastRunning = false;
 }
 
 async function api(url, opts) {
@@ -439,7 +583,8 @@ async function api(url, opts) {
 }
 
 function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function escapeAttr(s) { return s.replace(/'/g, "\\'"); }
+// 文件名只写进 data-* 属性，不再拼进 onclick；这里仍做完整属性转义以防万一
+function escapeAttr(s) { return escapeHtml(String(s)); }
 function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 function linkifyEscaped(esc) {
@@ -449,13 +594,18 @@ function linkifyEscaped(esc) {
 function linkify(text) { return linkifyEscaped(escapeHtml(text)); }
 
 // 渲染剪贴板文本：带搜索词时按大小写不敏感匹配分段并高亮
+const HIGHLIGHT_MAX = 50;   // 单条内容最多高亮 50 处，避免长文本整段拼 DOM 卡顿
 function renderText(text, q) {
   if (!q) return linkify(text);
   const esc = escapeHtml(text);
   const qEsc = escapeRegex(escapeHtml(q));
   const parts = esc.split(new RegExp('(' + qEsc + ')', 'gi'));
   // 带捕获组的 split：奇数下标必是匹配段
-  return parts.map((p, i) => i % 2 === 1 ? '<mark>' + p + '</mark>' : linkifyEscaped(p)).join('');
+  let marks = 0;
+  return parts.map((p, i) => {
+    if (i % 2 === 1 && marks < HIGHLIGHT_MAX) { marks++; return '<mark>' + p + '</mark>'; }
+    return linkifyEscaped(p);
+  }).join('');
 }
 
 // ================= 视图切换 =================
@@ -472,25 +622,59 @@ async function loadList(path) {
   currentPath = path || '';
   uploadTarget = currentPath;   // 切换目录时，上传目标默认跟随当前目录
   updateUploadTargetText();
+  renderSkeleton();
   try {
     const data = await api('/api/list?path=' + encodeURIComponent(currentPath));
     renderBreadcrumb(data.path);
     renderList(data.items);
   } catch (e) {
-    toast(e.message, 'error');
+    renderBreadcrumb(currentPath);
+    renderListError(e.message);
   }
+}
+
+// 加载中的骨架行，避免整块区域停留在纯文字「加载中...」造成白屏观感
+function renderSkeleton() {
+  const el = document.getElementById('fileList');
+  let html = '<div class="file-item file-header">'
+    + '<div class="file-check"></div><div class="file-icon"></div>'
+    + '<div class="file-name">名称</div><div class="file-size">大小</div>'
+    + '<div class="file-time">修改时间</div><div class="file-ops">操作</div></div>';
+  const widths = ['52%', '38%', '64%', '45%', '58%'];
+  for (let i = 0; i < 5; i++) {
+    html += `<div class="skeleton-row">
+      <div class="skeleton-bar" style="width:16px;height:16px;flex:none"></div>
+      <div class="skeleton-bar" style="width:20px;flex:none"></div>
+      <div class="skeleton-bar" style="width:${widths[i]}"></div>
+      <div class="skeleton-bar" style="width:52px;flex:none;margin-left:auto"></div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+// 失败时给出可点击的重试入口，而不是把页面留在「加载中」
+function renderListError(message) {
+  const el = document.getElementById('fileList');
+  el.innerHTML = `<div class="empty error-state">
+    <div class="big-icon">⚠️</div>
+    <div>目录加载失败</div>
+    <div style="margin-top:6px;font-size:13px">${escapeHtml(message || '网络异常')}</div>
+    <button class="btn btn-ghost btn-sm" onclick="loadList(currentPath)">🔄 重试</button>
+    ${currentPath ? '<button class="btn btn-ghost btn-sm" onclick="loadList(\'\')" style="margin-left:8px">返回根目录</button>' : ''}
+  </div>`;
 }
 
 function renderBreadcrumb(path) {
   const el = document.getElementById('breadcrumb');
-  let html = '<a onclick="loadList(\'\')">全部文件</a>';
+  const crumb = (label, target) =>
+    `<a href="#" class="crumb" data-path="${escapeAttr(target)}">${escapeHtml(label)}</a>`;
+  let html = crumb('全部文件', '');
   if (path) {
     const parts = path.split('/').filter(Boolean);
     let acc = '';
-    parts.forEach((p, i) => {
+    parts.forEach(p => {
       acc = acc ? acc + '/' + p : p;
-      const target = acc;
-      html += `<span class="sep">/</span><a onclick="loadList('${target}')">${escapeHtml(p)}</a>`;
+      html += `<span class="sep">/</span>` + crumb(p, acc);
     });
   }
   el.innerHTML = html;
@@ -507,7 +691,7 @@ function renderList(items) {
 
   let html = `
     <div class="file-item file-header">
-      <div class="file-check"><input type="checkbox" id="selectAll" onchange="toggleAll(this.checked)"></div>
+      <div class="file-check"><input type="checkbox" id="selectAll" aria-label="全选"></div>
       <div class="file-icon"></div>
       <div class="file-name">名称</div>
       <div class="file-size">大小</div>
@@ -518,19 +702,19 @@ function renderList(items) {
   items.forEach(item => {
     const icon = item.is_dir ? '📁' : fileIcon(item.name);
     const itemPath = currentPath ? currentPath + '/' + item.name : item.name;
+    // 目录用 <a href="#"> 以获得键盘可达性；文件名与路径只走 data-*，不拼进事件属性
     const nameHtml = item.is_dir
-      ? `<span class="dir-link" onclick="enterDir('${escapeAttr(item.name)}')">${escapeHtml(item.name)}</span>`
+      ? `<a href="#" class="dir-link" data-dir="${escapeAttr(item.name)}">${escapeHtml(item.name)}</a>`
       : `<a href="/api/download/${encodeURIComponent(itemPath)}" download>${escapeHtml(item.name)}</a>`;
     html += `
-      <div class="file-item">
-        <div class="file-check"><input type="checkbox" value="${escapeHtml(itemPath)}" onchange="toggleSelect(this)"></div>
+      <div class="file-item" data-path="${escapeAttr(itemPath)}" data-name="${escapeAttr(item.name)}" data-isdir="${item.is_dir ? '1' : '0'}">
+        <div class="file-check"><input type="checkbox" value="${escapeAttr(itemPath)}" aria-label="选择 ${escapeAttr(item.name)}"></div>
         <div class="file-icon">${icon}</div>
         <div class="file-name">${nameHtml}</div>
-        <div class="file-size">${item.size_text}</div>
-        <div class="file-time">${item.modified}</div>
+        <div class="file-size">${escapeHtml(item.size_text)}</div>
+        <div class="file-time">${escapeHtml(item.modified)}</div>
         <div class="file-ops">
-          <button class="btn btn-ghost btn-sm" onclick="renameItem('${escapeAttr(item.name)}')" title="重命名">✏️</button>
-          <button class="btn btn-danger btn-sm" onclick="deleteItem('${escapeAttr(item.name)}')" title="删除">🗑</button>
+          <button class="btn btn-ghost btn-sm" data-action="menu" aria-haspopup="menu" aria-label="更多操作：${escapeAttr(item.name)}" title="更多操作">⋯</button>
         </div>
       </div>`;
   });
@@ -569,6 +753,7 @@ function toggleAll(checked) {
 
 function clearSelection() {
   selectedItems.clear();
+  document.querySelectorAll('.file-item .file-check input[type=checkbox]').forEach(cb => { cb.checked = false; });
   updateBatchBar();
 }
 
@@ -583,9 +768,18 @@ function updateBatchBar() {
   }
   const selectAll = document.getElementById('selectAll');
   if (selectAll) {
-    const cbs = document.querySelectorAll('.file-item:not(.file-header) .file-check input[type=checkbox]');
-    selectAll.checked = cbs.length > 0 && [...cbs].every(cb => cb.checked);
+    const cbs = [...document.querySelectorAll('.file-item:not(.file-header) .file-check input[type=checkbox]')];
+    const checked = cbs.filter(cb => cb.checked).length;
+    selectAll.checked = cbs.length > 0 && checked === cbs.length;
+    selectAll.indeterminate = checked > 0 && checked < cbs.length;
   }
+}
+
+// 批量删除前把实际条目列出来，避免只看到「3 项」就误删
+function batchDeleteSummary() {
+  const names = [...selectedItems].map(p => p.split('/').pop());
+  const head = names.slice(0, 5).map(n => `「${n}」`).join('、');
+  return names.length > 5 ? `${head} 等 ${names.length} 项` : head;
 }
 
 async function batchDownload() {
@@ -619,9 +813,9 @@ async function batchDownload() {
 
 async function batchDelete() {
   if (selectedItems.size === 0) return;
-  if (!confirm(`确定删除选中的 ${selectedItems.size} 项吗？此操作不可恢复！`)) return;
+  if (!confirm(`确定删除以下内容吗？此操作不可恢复！\n\n${batchDeleteSummary()}`)) return;
   const paths = [...selectedItems];
-  let ok = 0, fail = 0;
+  const failed = [];
   for (const p of paths) {
     try {
       await api('/api/delete', {
@@ -629,17 +823,22 @@ async function batchDelete() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: p })
       });
-      ok++;
       selectedItems.delete(p);
-    } catch (e) { fail++; }
+    } catch (e) { failed.push(p); }
   }
-  toast(`已删除 ${ok} 项${fail ? `，${fail} 项失败` : ''}`, fail ? 'error' : 'success');
+  const ok = paths.length - failed.length;
+  if (failed.length) {
+    toast(`已删除 ${ok} 项，${failed.length} 项失败：${failed.slice(0, 3).map(p => p.split('/').pop()).join('、')}${failed.length > 3 ? ' 等' : ''}`, 'error');
+  } else {
+    toast(`已删除 ${ok} 项`, 'success');
+  }
   loadList(currentPath);
 }
 
 // ---- 上传 ----
 let uploadTarget = '';                       // 上传目标目录（相对共享根），默认跟随当前浏览目录
 let uploading = false;                      // 同一页面只运行一组上传任务
+let fileItemCache = [];                     // 最近一次上传的 {file, rel} 列表，供失败重试复用
 const BATCH_MAX_FILES = 20;                  // 单批最多文件数
 const BATCH_MAX_BYTES = 32 * 1024 * 1024;    // 单批最大字节数
 
@@ -694,12 +893,13 @@ function makeBatches(items) {
   return batches;
 }
 
-function uploadBatch(batch, target, onProgress) {
+function uploadBatch(batch, target, onProgress, registerXhr) {
   return new Promise((resolve, reject) => {
     const fd = new FormData();
     fd.append('dir', target);
     for (const it of batch) fd.append('files', it.file, it.rel);
     const xhr = new XMLHttpRequest();
+    if (registerXhr) registerXhr(xhr);
     xhr.upload.addEventListener('progress', e => {
       if (e.lengthComputable && onProgress) onProgress(e.loaded);
     });
@@ -718,6 +918,11 @@ function uploadBatch(batch, target, onProgress) {
       error.retryable = true;
       reject(error);
     });
+    xhr.addEventListener('abort', () => {
+      const error = new Error('已取消');
+      error.aborted = true;
+      reject(error);
+    });
     xhr.open('POST', '/api/upload');
     xhr.timeout = 0;                         // 不限制总时长，由服务端检测连续无数据超时
     xhr.send(fd);
@@ -729,21 +934,98 @@ function setUploadProgress(pct, text) {
   document.getElementById('uploadText').textContent = text;
 }
 
+// 上传控制：取消信号 + 当前请求句柄
+const uploadCtl = { cancelled: false, xhr: null };
+
+function cancelUpload() {
+  if (!uploading) return;
+  uploadCtl.cancelled = true;
+  if (uploadCtl.xhr) { try { uploadCtl.xhr.abort(); } catch (e) {} }
+  setUploadProgress(0, '正在取消...');
+}
+
+// 上传结果面板：成功数 + 失败清单（可展开），失败项支持一键重试
+let lastFailedItems = [];
+let lastUploadTarget = '';
+
+function showUploadResult(okCount, failed, oversize, target, cancelled) {
+  const box = document.getElementById('uploadResult');
+  lastFailedItems = failed;
+  lastUploadTarget = target;
+  if (!failed.length && !oversize.length && !cancelled) {
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  const parts = [];
+  if (okCount) parts.push(`成功 ${okCount} 个`);
+  if (cancelled) parts.push('已取消');
+  if (oversize.length) parts.push(`${oversize.length} 个超出大小上限`);
+  if (failed.length) parts.push(`${failed.length} 个失败`);
+
+  let html = `<div class="ur-head">
+      <span class="ur-title">${cancelled ? '🚫 上传已取消' : '⚠️ 上传未全部完成'}</span>
+      <span style="color:var(--text-3)">${parts.join(' · ')}${target ? ` → /${escapeHtml(target)}` : ' → 根目录'}</span>
+    </div>`;
+
+  if (oversize.length) {
+    html += `<div style="margin-top:6px;color:var(--text-2)">超过服务端大小上限的文件已跳过：</div>
+      <ul>${oversize.slice(0, 20).map(n => `<li>${escapeHtml(n)}</li>`).join('')}</ul>`;
+  }
+  if (failed.length) {
+    html += `<div style="margin-top:6px;color:var(--text-2)">失败的文件：</div>
+      <ul>${failed.slice(0, 50).map(n => `<li>${escapeHtml(n)}</li>`).join('')}</ul>`;
+    if (failed.length > 50) html += `<div style="color:var(--text-3)">…另有 ${failed.length - 50} 项未列出</div>`;
+  }
+  html += `<div class="ur-actions">
+      ${failed.length ? '<button class="btn btn-primary btn-sm" onclick="retryFailedUpload()">🔄 重试失败项</button>' : ''}
+      <button class="btn btn-ghost btn-sm" onclick="hideUploadResult()">关闭</button>
+    </div>`;
+  box.innerHTML = html;
+  box.hidden = false;
+}
+
+function hideUploadResult() {
+  const box = document.getElementById('uploadResult');
+  box.hidden = true;
+  box.innerHTML = '';
+  lastFailedItems = [];
+}
+
+function retryFailedUpload() {
+  if (!lastFailedItems.length) return;
+  const names = new Set(lastFailedItems);
+  // 失败项以相对路径记录，这里按路径末段与当前目录项匹配后重新排队
+  const items = [...fileItemCache].filter(it => names.has(it.rel) || names.has(it.file.name));
+  hideUploadResult();
+  if (!items.length) { toast('原文件已不在选择中，请重新选择后上传', 'error'); return; }
+  uploadTarget = lastUploadTarget;
+  updateUploadTargetText();
+  uploadItems(items);
+}
+
 async function uploadItems(items) {
   if (!items || !items.length) return;
   if (uploading) { toast('已有上传任务，请等待完成', 'error'); return; }
   uploading = true;
+  uploadCtl.cancelled = false;
+  uploadCtl.xhr = null;
+  hideUploadResult();
+  fileItemCache = items;
   const target = uploadTarget || '';
   const batches = makeBatches(items);
   const totalBytes = items.reduce((s, x) => s + (x.file.size || 0), 0);
   const bar = document.getElementById('uploadBar');
   bar.style.display = 'block';
+  document.getElementById('uploadCancel').disabled = false;
   setUploadProgress(0, `准备上传 ${items.length} 个文件...`);
 
   let okCount = 0, doneFiles = 0, doneBytes = 0;
   const failed = [], oversize = [];
+  let cancelled = false;
 
   for (let i = 0; i < batches.length; i++) {
+    if (uploadCtl.cancelled) { cancelled = true; break; }
     const batch = batches[i];
     const range = `${doneFiles + 1}-${doneFiles + batch.length}`;
     const baseText = `上传中 ${range}/${items.length} 个文件（第 ${i + 1}/${batches.length} 批）`;
@@ -751,24 +1033,37 @@ async function uploadItems(items) {
     try {
       let data;
       for (let attempt = 0; ; attempt++) {
+        if (uploadCtl.cancelled) { cancelled = true; break; }
         try {
           data = await uploadBatch(batch, target, loaded => {
             const pct = totalBytes ? Math.round((doneBytes + loaded) / totalBytes * 100) : 0;
             setUploadProgress(pct, `${baseText} · ${pct}%`);
-          });
+          }, xhr => { uploadCtl.xhr = xhr; });
           break;
         } catch (error) {
+          if (error.aborted) throw error;
           // 仅对单文件网络故障重试，避免多文件批次部分成功后重复发布。
           if (batch.length !== 1 || !error.retryable || attempt >= 2) throw error;
+          const wait = (attempt + 1) * 5000;
           setUploadProgress(totalBytes ? Math.round(doneBytes / totalBytes * 100) : 0,
-            `${baseText} · 连接中断，${(attempt + 1) * 5} 秒后重新上传（重试 ${attempt + 1}/2）`);
-          await new Promise(resolve => setTimeout(resolve, (attempt + 1) * 5000));
+            `${baseText} · 连接中断，${wait / 1000} 秒后重新上传（重试 ${attempt + 1}/2）`);
+          // 等待期间可被「取消」立即打断
+          await new Promise(resolve => {
+            const t = setTimeout(resolve, wait);
+            const tick = setInterval(() => {
+              if (uploadCtl.cancelled) { clearTimeout(t); clearInterval(tick); resolve(); }
+            }, 200);
+            setTimeout(() => clearInterval(tick), wait + 50);
+          });
+          if (uploadCtl.cancelled) { cancelled = true; break; }
         }
       }
+      if (cancelled) break;
       okCount += data.count || 0;
       if (data.oversize) oversize.push(...data.oversize);
       if (data.skipped) failed.push(...data.skipped);
     } catch (e) {
+      if (e.aborted) { cancelled = true; break; }
       failed.push(...batch.map(x => x.rel));
       if (batches.length === 1) toast(e.message, 'error');
     }
@@ -778,15 +1073,18 @@ async function uploadItems(items) {
 
   bar.style.display = 'none';
   uploading = false;
+  uploadCtl.xhr = null;
   setUploadProgress(0, '上传中...');
 
   if (okCount) {
     toast(`已上传 ${okCount} 个文件到 ${target ? '/' + target : '根目录'}`, 'success');
     loadList(currentPath);
   }
+  if (cancelled) toast('上传已取消', 'error');
   if (oversize.length) toast(`${oversize.length} 个文件超过大小上限，已跳过`, 'error');
   if (failed.length) toast(`${failed.length} 个文件上传失败`, 'error');
-  if (!okCount && !oversize.length && !failed.length) toast('没有可上传的文件', 'error');
+  if (!okCount && !oversize.length && !failed.length && !cancelled) toast('没有可上传的文件', 'error');
+  showUploadResult(okCount, failed, oversize, target, cancelled);
 }
 
 // ---- 拖拽上传（支持拖文件夹）----
@@ -867,6 +1165,105 @@ window.addEventListener('drop', async e => {
   if (items.length) uploadItems(items);
 });
 
+// ---- 行操作菜单 ----
+// 用事件委托统一处理列表里的点击/键盘事件：文件名、目录、菜单按钮都只带 data-*，
+// 不再把名称拼进内联 onclick，避免反斜杠/引号破坏脚本，也顺带获得键盘可达性。
+const rowMenu = document.getElementById('rowMenu');
+let menuOwnerPath = '';
+
+function closeRowMenu() {
+  rowMenu.hidden = true;
+  rowMenu.innerHTML = '';
+  menuOwnerPath = '';
+}
+
+function openRowMenu(btn, itemPath, itemName, isDir) {
+  const rect = btn.getBoundingClientRect();
+  menuOwnerPath = itemPath;
+  const actions = [];
+  if (!isDir) actions.push({ action: 'download', icon: '⬇️', label: '下载' });
+  actions.push({ action: 'rename', icon: '✏️', label: '重命名' });
+  actions.push({ action: 'delete', icon: '🗑', label: '删除', danger: true });
+  rowMenu.innerHTML = actions.map(a =>
+    `<button type="button" role="menuitem" data-action="${a.action}" class="${a.danger ? 'danger' : ''}">
+      <span>${a.icon}</span><span>${escapeHtml(a.label)}</span>
+    </button>`).join('');
+  rowMenu.dataset.name = itemName;
+  rowMenu.dataset.dir = isDir ? '1' : '0';
+  rowMenu.hidden = false;
+  // 贴边时向内收，避免菜单超出视口
+  const w = rowMenu.offsetWidth, h = rowMenu.offsetHeight;
+  let left = Math.min(rect.right - w, window.innerWidth - w - 8);
+  let top = rect.bottom + 4;
+  if (top + h > window.innerHeight - 8) top = Math.max(8, rect.top - h - 4);
+  rowMenu.style.left = Math.max(8, left) + 'px';
+  rowMenu.style.top = top + 'px';
+  const first = rowMenu.querySelector('button');
+  if (first) first.focus();
+}
+
+rowMenu.addEventListener('click', e => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  const name = rowMenu.dataset.name;
+  const isDir = rowMenu.dataset.dir === '1';
+  const path = menuOwnerPath;
+  closeRowMenu();
+  if (btn.dataset.action === 'download') {
+    window.location.href = '/api/download/' + encodeURIComponent(path);
+  } else if (btn.dataset.action === 'rename') {
+    renameItem(name);
+  } else if (btn.dataset.action === 'delete') {
+    deleteItem(name, isDir);
+  }
+});
+
+document.addEventListener('click', e => {
+  if (!rowMenu.hidden && !rowMenu.contains(e.target) && !e.target.closest('[data-action="menu"]')) closeRowMenu();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !rowMenu.hidden) { closeRowMenu(); }
+});
+window.addEventListener('resize', closeRowMenu);
+window.addEventListener('scroll', closeRowMenu, true);
+
+document.getElementById('fileList').addEventListener('click', e => {
+  const menuBtn = e.target.closest('[data-action="menu"]');
+  if (menuBtn) {
+    e.preventDefault();
+    const row = menuBtn.closest('.file-item');
+    if (row) openRowMenu(menuBtn, row.dataset.path, row.dataset.name, row.dataset.isdir === '1');
+    return;
+  }
+  // 目录链接单独用 data-dir 存目录名；行的 data-isdir 只表示是否为目录
+  const dirLink = e.target.closest('.dir-link');
+  if (dirLink && dirLink.dataset.dir !== undefined) {
+    e.preventDefault();
+    enterDir(dirLink.dataset.dir);
+  }
+});
+
+// 面包屑在 #fileList 之外，单独绑定
+document.getElementById('breadcrumb').addEventListener('click', e => {
+  const crumb = e.target.closest('.crumb');
+  if (!crumb) return;
+  e.preventDefault();
+  loadList(crumb.dataset.path);
+});
+
+document.getElementById('fileList').addEventListener('change', e => {
+  const t = e.target;
+  if (t.id === 'selectAll') { toggleAll(t.checked); return; }
+  if (t.matches('.file-check input[type=checkbox]')) toggleSelect(t);
+});
+
+// 目录名可用 Enter/Space 进入（<a href="#"> 本身已可聚焦）
+document.getElementById('fileList').addEventListener('keydown', e => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const dirLink = e.target.closest('.dir-link');
+  if (dirLink) { e.preventDefault(); enterDir(dirLink.dataset.dir); }
+});
+
 // ---- 新建文件夹 ----
 async function mkdir() {
   const name = prompt('请输入文件夹名称：');
@@ -883,8 +1280,11 @@ async function mkdir() {
 }
 
 // ---- 删除 ----
-async function deleteItem(name) {
-  if (!confirm(`确定删除「${name}」吗？`)) return;
+async function deleteItem(name, isDir) {
+  const tip = isDir
+    ? `确定删除文件夹「${name}」吗？\n\n若文件夹内还有内容，可能无法删除或会一并删除，此操作不可恢复！`
+    : `确定删除「${name}」吗？此操作不可恢复！`;
+  if (!confirm(tip)) return;
   const path = currentPath ? currentPath + '/' + name : name;
   try {
     await api('/api/delete', {
@@ -1047,9 +1447,32 @@ function clipSearchQuery() {
   return el ? el.value.trim() : '';
 }
 
+// 搜索输入做 200ms 防抖：避免每个按键都重渲染整个列表和高亮
+let clipSearchTimer = null;
 function filterClipboard() {
-  renderClipboard();
+  clearTimeout(clipSearchTimer);
+  clipSearchTimer = setTimeout(() => {
+    renderClipboard();
+    updateSearchSummary(clipSearchQuery());
+  }, 200);
 }
+
+function updateSearchSummary(q) {
+  const el = document.getElementById('clipSearchSummary');
+  if (!el) return;
+  if (!q) { el.textContent = ''; return; }
+  const matched = allClipItems.filter(it => it.type === 'text' && (it.text || '').toLowerCase().includes(q.toLowerCase())).length;
+  const images = allClipItems.filter(it => it.type === 'image').length;
+  el.textContent = `匹配 ${matched} 条文字${images ? ` · ${images} 张图片不参与搜索` : ''}`;
+}
+
+// 输入、清空（search 事件）、以及边框复位都走同一套渲染
+document.getElementById('clipSearch').addEventListener('input', filterClipboard);
+document.getElementById('clipSearch').addEventListener('search', function() {
+  clearTimeout(clipSearchTimer);
+  renderClipboard();
+  updateSearchSummary(this.value.trim());
+});
 
 function renderClipboard() {
   const q = clipSearchQuery();
@@ -1078,7 +1501,7 @@ function renderClipboard() {
               <button class="btn btn-danger btn-sm" onclick="deleteClip('${it.id}')">🗑</button>
             </div>
           </div>
-          <div class="clip-img-box"><img class="clip-img" src="/api/clipboard/file/${it.id}" onclick="window.open(this.src)" title="点击放大 · 右键可复制图片"></div>
+          <div class="clip-img-box"><img class="clip-img" src="/api/clipboard/file/${it.id}" loading="lazy" decoding="async" alt="共享图片" onclick="window.open(this.src)" title="点击放大 · 右键可复制图片"></div>
           <div class="clip-hint" style="margin-top:6px">右键图片 → 复制图片；或点「保存」下载</div>
         </div>`;
     } else if (it.id === editingClipId) {
